@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Secrets and local env
+.env
+.env.*
+!.env.example
+
+# Large / generated data (adjust if you use Git LFS)
+*.parquet
+*.dbn
+*.dbn.zst
+*.zst
+mbo_features_sample.*
+
+# Logs and temp
+*.log
+tmp/
+temp/
+
+# Optional: local Claude / tooling (keep repo portable)
+.claude/
