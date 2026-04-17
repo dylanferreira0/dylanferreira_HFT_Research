@@ -11,7 +11,7 @@ Personal research repo: **Databento MBO → LOB → features → models → TCA*
 | [`export_enriched_csv.py`](export_enriched_csv.py) | Enriched CSV export utilities |
 | [`download_opra.py`](download_opra.py) | OPRA / options data download helper |
 | [`model_export/`](model_export/) | Serialized model artifacts (JSON) for C++ or other consumers |
-| [`prep/`](prep/) | Notes and prep material |
+| [`prep/`](prep/) | Prep notes: [`prep/pm_walkthrough_notes.md`](prep/pm_walkthrough_notes.md) (technical PM walkthrough, code-checked), [`prep/ma_capital_call_notes.md`](prep/ma_capital_call_notes.md) |
 | Root tests | `test_pipeline.py`, `test_schema.py`, `test_instruments.py` |
 
 ## `adaptive_mm` modules (quick reference)

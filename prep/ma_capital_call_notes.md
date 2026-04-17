@@ -27,16 +27,17 @@ Four horizons trained separately: **50 ms** (fast/co-lo HFT), **500 ms** (medium
 
 ## 3. Feature set
 
-All features are EMA z-scored with two halflives: fast (500 trades, local adaptation) and slow (5000 trades, session-level). The 42 features in the trained model are:
+All features are EMA z-scored with two halflives: fast (500 trades, local adaptation) and slow (5000 trades, session-level). **`regressors.get_regressor_names()`** lists every column the code *can* use; **`ToxicityModel`** trains only on columns that actually exist in the dataframe. The **shipped** `model_export/toxicity_model.json` in this repo is a **42-feature** slow (1s) model — that list is authoritative for what was exported from the last run, not every theoretical window.
 
-**Order flow — the strongest predictors** ★
+For that export: **three** L1 OFI z-scores (`50ms`, `500ms`, `5000ms` only), **one** L2 window (`500ms` only), plus deep/agg OFI, imbalances, book shape, interactions `ofi_L1_x_vol`, `ofi_L1_x_spread`, `imb_L2_x_vol`, `slope_x_accel` — and **no** flicker / TWAS / `widen_x_ofi` columns (those live in `regressors.py` when upstream feature columns exist).
+
+**Order flow — strongest in the shipped 42** ★
 
 | Feature | Measures | Why predictive |
 |---|---|---|
-| ★ `z_ofi_L1_{10,50,100,200,500,1000,5000}ms` | Level-1 order flow imbalance across 7 windows | Best single predictor of short-horizon price direction (Cont, Kukanov & Stoikov 2014) |
-| ★ `z_ofi_L2_500ms`, `z_ofi_L2_5000ms` | OFI at level 2 | Institutional orders often sit one tick back; L2 OFI leads L1 moves |
-| `z_ofi_deep_500ms`, `z_ofi_deep_5000ms` | OFI beyond L2 | Iceberg / resting order signal |
-| `z_ofi_agg_500ms` | Aggregated OFI across levels | Summary flow pressure |
+| ★ `z_ofi_L1_50ms`, `z_ofi_L1_500ms`, `z_ofi_L1_5000ms` | L1 OFI (subset of windows in this export) | Cont, Kukanov & Stoikov (2014) style signal |
+| ★ `z_ofi_L2_500ms` | OFI at level 2 (500ms) | Institutional layering one tick back |
+| `z_ofi_deep_500ms`, `z_ofi_agg_500ms` | Deep / aggregate OFI | Iceberg and net pressure |
 | ★ `z_signed_vol_500ms`, `z_signed_vol_5000ms` | Buy vol − sell vol | Directional momentum |
 | `z_vpin_500ms`, `z_vpin_5000ms` | `|signed_vol| / total_vol` in volume buckets | Easley et al. (2012) probability of informed trading |
 | `z_kyle_lambda` | `cov(Δmid, OFI) / var(OFI)` | Market impact per unit of order flow |
@@ -79,9 +80,9 @@ All features are EMA z-scored with two halflives: fast (500 trades, local adapta
 | `z_trade_accel` | `log(fast_rate) − log(slow_rate)` — acceleration of trade arrivals |
 | `z_trade_rate` | Absolute trade rate |
 
-**Interaction terms** *(non-linear regime effects)*
+**Interaction terms** *(in this export)*
 
-`ofi_L1_x_vol`, `ofi_L1_x_spread`, `imb_L2_x_vol`, `slope_x_accel` — capture regime-conditional signal strength. Included in the trained 42-feature model.
+`ofi_L1_x_vol`, `ofi_L1_x_spread`, `imb_L2_x_vol`, `slope_x_accel`. Additional interactions (`flicker_x_vol`, `widen_x_ofi`) are built in `regressors.compute_regressors` only when the underlying z-columns exist.
 
 ---
 
@@ -133,7 +134,7 @@ MBO gives individual order lifecycles — every add, cancel, modify, and fill wi
 
 2. **Regime-conditional feature selection.** The fold R² variance (0.015–0.110) shows the model is not robust across regimes. The Markov regime classifier is already built; using it to gate feature subsets or train separate ridge models per regime is a concrete, low-effort improvement on top of existing infrastructure.
 
-3. **Cross-asset signal integration.** `options.py` already computes GEX, vanna, and IV skew from SPX options data. These are used in the spread optimizer but not in the toxicity model itself. Adding GEX × OFI interactions as regressors is already motivated by the code structure and would connect macro dealer flow to microstructure toxicity.
+3. **Cross-asset signal integration.** `options.py` computes GEX, vanna, and IV skew from SPX options data. The **spread optimizer** can consume `gex_values`, but **`run_research` does not pass them today**, so the GEX bin collapses to neutral. Options features are not in the toxicity regressor matrix until wired in.
 
 ---
 
@@ -143,7 +144,7 @@ MBO gives individual order lifecycles — every add, cancel, modify, and fill wi
 - **Fold R² variance is high** — don't present 0.059 as a stable number; it's an average of 0.015–0.110.
 - **RLS online adaptation is not live-tested** — it's implemented and architecturally sound, but I haven't run it in production.
 - **No live trading PnL** — the backtest and TCA are on the same dataset the model was fit on (holdout is 40%, which is reasonable but not a separate out-of-sample year).
-- **The GEX/options pipeline is separate from the toxicity model** — the 42-feature toxicity model does not include any options features; those only feed the spread optimizer.
+- **The GEX/options pipeline is separate from the toxicity model** — the 42-feature toxicity model does not include any options features. GEX would only affect spread tables **after** `gex_values` is passed into `run_spread_optimization`; the default `run_research` path does not.
 - **The binary toxic label (|return| > 0) is weak** — a single tick move doesn't mean much; this inflates the positive-class rate and makes calibrated probabilities hard to interpret economically.
 - **No multi-symbol generalization tested** — I don't know if the feature importances hold for NQ, CL, or other futures.
 
