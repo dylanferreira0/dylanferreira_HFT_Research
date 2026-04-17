@@ -1,8 +1,20 @@
-"""Quick schema check on one MBO file."""
-import databento as db
-import numpy as np
+"""Quick schema check on one MBO file.
 
-path = r"C:\Users\Dylan Ferreira\OneDrive\ES Datebento\glbx-mdp3-20250827.mbo.dbn.zst"
+Usage:
+    python test_schema.py <path-to-mbo-file>
+    # or set HFT_MBO_FILE
+"""
+import os
+import sys
+import databento as db
+
+path = (sys.argv[1] if len(sys.argv) > 1
+        else os.environ.get("HFT_MBO_FILE", ""))
+if not path:
+    raise SystemExit(
+        "Provide an MBO file path as argv[1] or set HFT_MBO_FILE."
+    )
+
 store = db.DBNStore.from_file(path)
 
 meta = store.metadata

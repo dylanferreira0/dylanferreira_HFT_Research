@@ -18,7 +18,6 @@ to kill any autocorrelation leakage.
 
 import numpy as np
 from sklearn.isotonic import IsotonicRegression
-from sklearn.linear_model import ElasticNet
 
 from .regressors import get_regressor_names, compute_regressors, regressor_diagnostics
 

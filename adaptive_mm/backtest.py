@@ -11,6 +11,7 @@ MBO Research Pipeline.
 6. Exports model parameters for C++ consumption
 """
 
+import os
 import time
 import json
 import numpy as np
@@ -30,7 +31,8 @@ from .tca import (markout_analysis, adverse_selection_by_regime,
 from .regressors import compute_regressors, regressor_diagnostics
 from .spread_optimizer import run_spread_optimization
 
-MBO_DATA_DIR = Path(r"C:\Users\Dylan Ferreira\OneDrive\ES Datebento")
+DEFAULT_MBO_DIR = Path(r"C:\Users\Dylan Ferreira\OneDrive\ES Datebento")
+MBO_DATA_DIR = Path(os.environ.get("HFT_MBO_DIR", str(DEFAULT_MBO_DIR)))
 
 
 # ====================================================================

@@ -17,7 +17,8 @@ import os
 import databento as db
 from pathlib import Path
 
-OUT_DIR = Path(r"C:\Users\Dylan Ferreira\OneDrive\ES Datebento\opra")
+DEFAULT_OUT_DIR = Path(r"C:\Users\Dylan Ferreira\OneDrive\ES Datebento\opra")
+OUT_DIR = Path(os.environ.get("HFT_OPRA_DIR", str(DEFAULT_OUT_DIR)))
 
 
 def _api_key() -> str:

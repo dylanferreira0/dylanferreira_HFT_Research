@@ -26,7 +26,7 @@ Personal research repo: **Databento MBO → LOB → features → models → TCA*
 - **`tca.py`** — Transaction cost analysis (markouts, adverse selection, queue)  
 - **`engine.py`** — Execution / simulation glue  
 - **`options.py`** — Options-related extensions  
-- **`cpp_databento_ml_optimized*.cpp`** — Optimized C++ reference / integration path  
+- **`cpp_databento_ml_optimized.cpp`** — Optimized C++ reference / integration path  
 
 ## Typical workflow
 
@@ -40,4 +40,19 @@ Large raw MBO archives and generated parquet are **not** tracked here by default
 
 ## Requirements
 
-Python 3 with dependencies implied by imports in `adaptive_mm` and the root scripts (install as you standardize the project, e.g. `requirements.txt` if you add one).
+Python 3.10+. Install core deps:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Environment variables
+
+| Variable | Purpose | Used by |
+|----------|---------|---------|
+| `DATABENTO_API_KEY` | Databento historical API key | `download_opra.py` |
+| `HFT_MBO_DIR` | Folder containing `*.mbo.dbn.zst` MBO sessions (default: local research path in `adaptive_mm/backtest.py`) | `run_research.py`, `adaptive_mm/backtest.py` |
+| `HFT_OPRA_DIR` | Output folder for OPRA downloads | `download_opra.py` |
+| `HFT_MBO_FILE` | Single MBO file path for ad-hoc checks | `test_schema.py`, `test_instruments.py` |
+
+Never commit real keys; use a local `.env` (see `.env.example`).
