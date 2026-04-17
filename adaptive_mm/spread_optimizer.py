@@ -58,12 +58,17 @@ def compute_markout_payoffs(
     For each trade, compute the signed markout (in ticks) at each horizon.
     Markout = sign * (mid_future - mid_now) / TICK_SIZE
     where sign = +1 for buy-initiated, -1 for sell-initiated.
+
+    Convention matches the rest of the pipeline (see features.py, tca.py):
+    trade_side == 0 is a buy aggressor (+1), trade_side == 1 is a sell
+    aggressor (-1). Keeping this consistent is important for the skew sign
+    exported to the spread lookup table.
     """
     if horizons_ns is None:
         horizons_ns = [100_000_000, 500_000_000, 1_000_000_000, 5_000_000_000]
 
     n = len(mid)
-    sign = np.where(trade_side == 1, 1.0, -1.0)
+    sign = np.where(trade_side == 0, 1.0, -1.0)
     markouts = {}
 
     for h_ns in horizons_ns:

@@ -129,6 +129,14 @@ Isotonic maps `|raw_ridge_score|` → P(toxic) with the permissive binary label 
 2. Load exported ridge weights / optional isotonic in `cpp_databento_ml_optimized.cpp` and align feature vector with the JSON you ship.  
 3. Multi-symbol / multi-month validation.
 
+## 10b. Sign convention
+
+Throughout the pipeline, `trade_side` follows **features.py / tca.py**:  
+- `trade_side == 0` → **buy aggressor** (positive expected markout if flow is toxic)  
+- `trade_side == 1` → **sell aggressor**  
+
+`spread_optimizer.compute_markout_payoffs` uses the same mapping so the exported **skew** in the spread lookup table is aligned with the TCA narrative (positive signed markout → widen ask and skew quotes away from the informed side).
+
 ## 11. Math reference (matches `engine.py`)
 
 **SpreadRegime** (`adaptive_mm/engine.py`):  
