@@ -61,8 +61,8 @@ def compute_markout_payoffs(
 
     Convention matches the rest of the pipeline (see features.py, tca.py):
     trade_side == 0 is a buy aggressor (+1), trade_side == 1 is a sell
-    aggressor (-1). Keeping this consistent is important for the skew sign
-    exported to the spread lookup table.
+    aggressor (-1). Uses side='left' searchsorted (first index >= ts+h)
+    to match features.py forward-return convention.
     """
     if horizons_ns is None:
         horizons_ns = [100_000_000, 500_000_000, 1_000_000_000, 5_000_000_000]
@@ -72,13 +72,57 @@ def compute_markout_payoffs(
     markouts = {}
 
     for h_ns in horizons_ns:
-        future_idx = np.searchsorted(ts_ns, ts_ns + h_ns, side='right') - 1
-        future_idx = np.clip(future_idx, 0, n - 1)
-        mid_future = mid[future_idx]
+        future_idx = np.searchsorted(ts_ns, ts_ns + h_ns)
+        valid = future_idx < n
+        future_idx_c = np.minimum(future_idx, n - 1)
+        mid_future = mid[future_idx_c]
         markout_ticks = sign * (mid_future - mid) / TICK_SIZE
+        markout_ticks[~valid] = np.nan
         markouts[h_ns] = markout_ticks
 
     return markouts
+
+
+def estimate_fill_probability(
+    mid: np.ndarray,
+    ts_ns: np.ndarray,
+    trade_side: np.ndarray,
+    hs_grid: np.ndarray,
+    horizon_ns: int = 1_000_000_000,
+) -> np.ndarray:
+    """
+    Empirical fill-probability for each half-spread level.
+
+    For each observed trade at time t, a passive quote at distance hs
+    from the mid would have been filled if the mid moved through it
+    within the horizon. We estimate P(fill | hs) as the fraction of
+    trades where |mid_max_excursion| >= hs.
+
+    Returns (n_trades, len(hs_grid)) boolean matrix.
+    """
+    n = len(mid)
+    # for each trade, compute maximum favorable excursion within horizon
+    # (i.e. how far did the mid move THROUGH our quote on the passive side?)
+    future_idx = np.searchsorted(ts_ns, ts_ns + horizon_ns)
+    future_idx_c = np.minimum(future_idx, n)
+
+    fills = np.zeros((n, len(hs_grid)), dtype=bool)
+    for i in range(n):
+        end = future_idx_c[i]
+        if end <= i:
+            continue
+        window_mid = mid[i + 1:end]
+        if len(window_mid) == 0:
+            continue
+        # market-maker's passive side: if aggressor buys, our ask was hit,
+        # so we care about how far mid went UP (ask excursion).
+        # if aggressor sells, our bid was hit, care about DOWN (bid excursion).
+        if trade_side[i] == 0:  # buy aggressor → our ask filled
+            excursion = (np.max(window_mid) - mid[i]) / TICK_SIZE
+        else:  # sell aggressor → our bid filled
+            excursion = (mid[i] - np.min(window_mid)) / TICK_SIZE
+        fills[i] = hs_grid <= excursion
+    return fills
 
 
 def compute_optimal_spread_table(
@@ -93,22 +137,23 @@ def compute_optimal_spread_table(
     Build the optimal spread lookup table.
 
     For each (vol_regime, tox_decile, [gex_regime]):
-        optimal_hs = argmax_{hs} E[hs - |markout|]
-        where expectation is taken over all trades in that bin.
+        optimal_hs = argmax_{hs} E[ P(fill|hs) * (hs - |markout|) ]
 
-    The payoff for a market maker quoting at half-spread hs is:
-        capture = hs  (we earn hs when filled)
-        cost    = max(|markout| - hs, 0)  (adverse selection exceeding our spread)
-        net     = hs - |markout|  when |markout| > 0
-    Actually, the net PnL per fill is simply: hs - markout (signed).
-    We want to maximize E[hs - |adverse_markout|].
+    P(fill|hs) decreases with hs (wider quotes get filled less often),
+    which is the key ingredient the old formula was missing. Without it,
+    argmax always picks the widest spread. We estimate P(fill|hs) from
+    the empirical max-excursion of mid within the markout horizon.
     """
     mid = feat_df['mid'].values
     ts_ns = feat_df['ts_ns'].values if 'ts_ns' in feat_df.columns else reg_df['ts_ns'].values
     trade_side = feat_df['trade_side'].values if 'trade_side' in feat_df.columns else reg_df['trade_side'].values
 
     markouts = compute_markout_payoffs(mid, trade_side, ts_ns, [markout_horizon_ns])
-    markout = markouts[markout_horizon_ns]  # signed markout in ticks
+    markout = markouts[markout_horizon_ns]
+
+    # fill-probability matrix: (n_trades, len(HS_GRID))
+    fill_mat = estimate_fill_probability(
+        mid, ts_ns, trade_side, HS_GRID, markout_horizon_ns)
 
     # toxicity score
     tox_scores = toxicity_model.predict_batch(reg_df)
@@ -143,36 +188,37 @@ def compute_optimal_spread_table(
                 mask = (vol_regime == v) & (tox_deciles == t)
                 if has_gex:
                     mask &= (gex_regime == g)
+                mask &= np.isfinite(markout)
 
-                n_trades = mask.sum()
+                n_trades = int(mask.sum())
                 if n_trades < 50:
-                    table[(v, t, g)] = 1.0  # default 1 tick
+                    table[(v, t, g)] = 1.0
                     skew_table[(v, t, g)] = 0.0
                     continue
 
                 mo = markout[mask]
                 abs_mo = np.abs(mo)
+                fill_sub = fill_mat[mask]  # (n_trades, n_hs)
 
-                # for each half-spread candidate, compute expected net PnL
                 best_hs = 1.0
-                best_pnl = -np.inf
+                best_ev = -np.inf
 
-                for hs in HS_GRID:
-                    # PnL = hs - |markout| per filled trade
-                    # but we only get filled when the market trades through us.
-                    # approximate: we capture hs, lose markout
-                    net_pnl = hs - abs_mo
-                    expected = net_pnl.mean()
-                    if expected > best_pnl:
-                        best_pnl = expected
+                for j, hs in enumerate(HS_GRID):
+                    filled = fill_sub[:, j]
+                    if filled.sum() < 10:
+                        continue
+                    # conditional PnL per fill: we capture hs, lose |markout|
+                    per_fill_pnl = hs - abs_mo[filled]
+                    # expected PnL per trade = P(fill) * E[pnl | fill]
+                    p_fill = float(filled.mean())
+                    ev = p_fill * float(per_fill_pnl.mean())
+                    if ev > best_ev:
+                        best_ev = ev
                         best_hs = hs
 
                 table[(v, t, g)] = float(best_hs)
 
-                # bid/ask skew: if average markout is directional,
-                # shift quotes away from the losing side
-                avg_signed_mo = mo.mean()
-                # positive markout = buys are toxic = widen ask
+                avg_signed_mo = float(mo.mean())
                 skew = np.clip(avg_signed_mo * 0.5, -2.0, 2.0)
                 skew_table[(v, t, g)] = float(skew)
 

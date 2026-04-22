@@ -17,13 +17,15 @@ class MarkovModel:
     N_SPREAD_BUCKETS    = 3   # tight(1 tick), normal(2), wide(3+)
     N_IMBALANCE_BUCKETS = 3   # bid-heavy / balanced / ask-heavy
     N_STATES            = N_SPREAD_BUCKETS * N_IMBALANCE_BUCKETS  # 9
-    MAX_CHANGE          = 5   # cap at ±5 ticks
+    MAX_CHANGE          = 5   # cap at +/-5 ticks
     N_OUTCOMES          = 2 * MAX_CHANGE + 1                      # 11
     N_REGIMES           = 3   # low / mid / high vol
 
-    def __init__(self, vol_quantiles=(0.33, 0.67)):
+    def __init__(self, vol_quantiles=(0.33, 0.67), prior_strength: float = 0.1):
         self.vol_quantiles = vol_quantiles
         self.vol_thresholds: np.ndarray | None = None
+        self._thresholds_frozen: bool = False
+        self._prior_strength = prior_strength
 
         self.counts = np.zeros((self.N_REGIMES, self.N_STATES, self.N_OUTCOMES))
         self.probs  = np.ones((self.N_REGIMES, self.N_STATES, self.N_OUTCOMES)) / self.N_OUTCOMES
@@ -57,6 +59,10 @@ class MarkovModel:
                 self.vol_thresholds = np.quantile(positive, list(self.vol_quantiles))
         return np.clip(np.digitize(rv, self.vol_thresholds), 0, self.N_REGIMES - 1)
 
+    def freeze_thresholds(self):
+        """Lock vol_thresholds so future detect_regimes calls can't refit."""
+        self._thresholds_frozen = True
+
     # -- estimation --
 
     def fit(self, spread_ticks, imbalance, price_change_ticks, realized_vol):
@@ -66,13 +72,17 @@ class MarkovModel:
         states   = self.state_index(sp, imb)
         outcomes = self.discretize_price_change(price_change_ticks)
         regimes  = self.detect_regimes(realized_vol)
+        self.freeze_thresholds()
 
+        # vectorized counting via np.add.at
         self.counts[:] = 0
-        n = len(states)
-        for i in range(n):
-            self.counts[regimes[i], states[i], outcomes[i]] += 1
+        np.add.at(self.counts, (regimes, states, outcomes), 1)
 
-        smoothed = self.counts + 1.0
+        # Dirichlet-style smoothing: add prior_strength * 1/N_OUTCOMES
+        # to each cell. Lighter than the old +1.0 uniform prior, which
+        # drowned sparse bins and inflated tail probabilities.
+        alpha = self._prior_strength / self.N_OUTCOMES
+        smoothed = self.counts + alpha
         self.probs = smoothed / smoothed.sum(axis=2, keepdims=True)
         return self
 
@@ -110,10 +120,9 @@ class MarkovModel:
         imb = self.discretize_imbalance(imbalance)
         states  = self.state_index(sp, imb)
         regimes = self.detect_regimes(realized_vol)
-        out = np.empty(len(states))
-        for i in range(len(states)):
-            out[i] = np.dot(self.probs[regimes[i], states[i]], self.outcome_values)
-        return out
+        return np.einsum('ij,j->i',
+                         self.probs[regimes, states],
+                         self.outcome_values)
 
     def summary(self):
         """Print per-regime distribution statistics."""

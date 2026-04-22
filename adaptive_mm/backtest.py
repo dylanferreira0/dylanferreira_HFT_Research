@@ -86,7 +86,10 @@ def _resolve_ts(df: pd.DataFrame) -> np.ndarray:
     idx = df.index
     if hasattr(idx.dtype, 'tz') or str(idx.dtype).startswith('datetime64'):
         return idx.astype("int64")
-    return np.arange(len(df), dtype=np.int64)
+    raise ValueError(
+        "No timestamp column (ts_event / ts_recv) found in MBO DataFrame. "
+        "Fabricating fake timestamps would silently break every rolling window."
+    )
 
 
 def _resolve_ts_recv(df: pd.DataFrame) -> np.ndarray:
@@ -635,7 +638,21 @@ def run_research(days: int | None = None, export: bool = True):
         all_features.append(feat_df)
 
     full_df = pd.concat(all_features, ignore_index=True)
-    full_df.fillna(0, inplace=True)
+
+    # NaN-safe: zero-fill FEATURES only, preserve NaN in forward-return
+    # targets (day-boundary samples whose horizon extends past end-of-day
+    # MUST stay NaN so they're excluded from training / evaluation).
+    target_cols = [c for c in full_df.columns
+                   if c.startswith('fwd_return_') or c.startswith('fwd_mp_')]
+    feature_cols = [c for c in full_df.columns if c not in target_cols]
+    full_df[feature_cols] = full_df[feature_cols].fillna(0)
+
+    # ensure ts_ns is monotonically non-decreasing across concatenated
+    # days. If files were not date-sorted, searchsorted / EWM order breaks.
+    if not np.all(np.diff(full_df['ts_ns'].values) >= 0):
+        print("  WARNING: ts_ns not monotonic after concat — sorting by ts_ns")
+        full_df = full_df.sort_values('ts_ns', kind='mergesort').reset_index(drop=True)
+
     print(f"\nTotal dataset: {len(full_df):,} trade-level observations")
 
     # ── Phase 2: Model training ──────────────────────────────
@@ -650,6 +667,10 @@ def run_research(days: int | None = None, export: bool = True):
     print(f"\n  Computing regressors (rolling z-scores)...")
     reg_df = compute_regressors(full_df)
     print(f"  Regressors: {reg_df.shape[1]} columns")
+
+    assert len(reg_df) == len(full_df) and np.array_equal(
+        reg_df['ts_ns'].values, full_df['ts_ns'].values), \
+        "Feature/regressor alignment broken — row count or ts_ns mismatch"
 
     # train on first 60%, TCA on last 40% (never seen by models)
     n_train = int(len(full_df) * 0.6)

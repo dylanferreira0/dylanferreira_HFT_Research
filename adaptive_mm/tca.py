@@ -256,6 +256,7 @@ def toxicity_decile_separation(df: pd.DataFrame, tox_scores: np.ndarray):
     except ValueError:
         return pd.DataFrame()
 
+    n_bins = int(deciles.max()) + 1
     rows = []
     for d in sorted(set(deciles)):
         mask = deciles == d
@@ -274,9 +275,12 @@ def toxicity_decile_separation(df: pd.DataFrame, tox_scores: np.ndarray):
         lo = result.iloc[0]['markout_mean']
         hi = result.iloc[-1]['markout_mean']
         sep = lo - hi
-        print(f"  Decile separation (D0 - D9): {sep:+.4f} ticks")
-        print(f"  D0 (low tox): markout={lo:+.4f}  |  "
-              f"D9 (high tox): markout={hi:+.4f}")
+        d_lo = int(result.iloc[0]['decile'])
+        d_hi = int(result.iloc[-1]['decile'])
+        label = f"D{d_lo}-D{d_hi}" if n_bins == 10 else f"D{d_lo}-D{d_hi} ({n_bins} bins, ties collapsed)"
+        print(f"  Decile separation ({label}): {sep:+.4f} ticks")
+        print(f"  D{d_lo} (low tox): markout={lo:+.4f}  |  "
+              f"D{d_hi} (high tox): markout={hi:+.4f}")
 
     return result
 

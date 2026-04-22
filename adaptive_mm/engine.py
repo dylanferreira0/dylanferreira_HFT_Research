@@ -30,7 +30,9 @@ class SpreadRegime:
                        gex_local: float = 0.0) -> int:
         vol_ratio = np.clip(vol_fast / (vol_slow + 1e-10), 0.5, 3.0)
         g = 1.0 + self.inv_penalty * abs(inventory) / 10.0
-        h = 1.0 + self.tox_scale * max(abs(toxicity_score), 0.0)
+        h = 1.0 + self.tox_scale * abs(toxicity_score)
+        # gex_local must be pre-normalized to [-1, 1] by the caller;
+        # clamp defensively so raw GEX values can't flip or collapse f.
         f = 1.0 - 0.3 * np.clip(gex_local, -1.0, 1.0)
         raw = self.base * vol_ratio * g * h * f
         return int(np.clip(round(raw), 1, self.max_spread))
