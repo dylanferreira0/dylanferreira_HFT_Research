@@ -279,33 +279,45 @@ def compute_regressors(df: pd.DataFrame,
                 df[col].values.astype(np.float64), slow)
 
     # ── INTERACTION TERMS ─────────────────────────────────
+    # Products of z-scored inputs are NOT themselves z-scored (their
+    # variance is ~1 + corr^2 with heavy tails), so we re-z-score them
+    # before handing off to the ridge. Otherwise their effective
+    # penalty under alpha*I is miscalibrated relative to the linear
+    # z_* features.
+
     # OFI_L1 in high-vol regimes (most informative)
     if 'z_ofi_L1_500ms' in reg.columns and 'z_realized_vol' in reg.columns:
-        reg['ofi_L1_x_vol'] = reg['z_ofi_L1_500ms'] * reg['z_realized_vol']
+        reg['ofi_L1_x_vol'] = _zscore(
+            (reg['z_ofi_L1_500ms'] * reg['z_realized_vol']).values, fast)
 
     # OFI_L1 when spread is wide (adverse selection peaks)
     if 'z_ofi_L1_500ms' in reg.columns and 'spread_ticks' in reg.columns:
-        reg['ofi_L1_x_spread'] = reg['z_ofi_L1_500ms'] * reg['spread_ticks']
+        reg['ofi_L1_x_spread'] = _zscore(
+            (reg['z_ofi_L1_500ms'] * reg['spread_ticks']).values, fast)
 
     # L2 imbalance in high-vol (institutional hiding behavior)
     if 'z_imb_L2' in reg.columns and 'z_realized_vol' in reg.columns:
-        reg['imb_L2_x_vol'] = reg['z_imb_L2'] * reg['z_realized_vol']
+        reg['imb_L2_x_vol'] = _zscore(
+            (reg['z_imb_L2'] * reg['z_realized_vol']).values, fast)
 
     # Book slope during trade bursts (thin book + activity = danger)
     if 'z_slope_bid' in reg.columns and 'z_trade_accel' in reg.columns:
-        reg['slope_x_accel'] = (
-            (reg['z_slope_bid'] + reg['z_slope_ask']) / 2 * reg['z_trade_accel']
+        slope_prod = (
+            ((reg['z_slope_bid'] + reg['z_slope_ask']) / 2 * reg['z_trade_accel']).values
             if 'z_slope_ask' in reg.columns
-            else reg['z_slope_bid'] * reg['z_trade_accel']
+            else (reg['z_slope_bid'] * reg['z_trade_accel']).values
         )
+        reg['slope_x_accel'] = _zscore(slope_prod, fast)
 
     # flicker during high-vol = HFTs repricing aggressively
     if 'z_flicker_50ms' in reg.columns and 'z_realized_vol' in reg.columns:
-        reg['flicker_x_vol'] = reg['z_flicker_50ms'] * reg['z_realized_vol']
+        reg['flicker_x_vol'] = _zscore(
+            (reg['z_flicker_50ms'] * reg['z_realized_vol']).values, fast)
 
     # spread widening + OFI = MMs fleeing informed flow
     if 'z_widen_rate_1000ms' in reg.columns and 'z_ofi_L1_500ms' in reg.columns:
-        reg['widen_x_ofi'] = reg['z_widen_rate_1000ms'] * reg['z_ofi_L1_500ms']
+        reg['widen_x_ofi'] = _zscore(
+            (reg['z_widen_rate_1000ms'] * reg['z_ofi_L1_500ms']).values, fast)
 
     # ── Forward returns (targets) ─────────────────────────
     for col in df.columns:
@@ -396,7 +408,9 @@ def regressor_diagnostics(reg_df: pd.DataFrame,
         xv, yv = x[both], y[both]
         corr = np.corrcoef(xv, yv)[0, 1]
         ss_tot = np.var(yv) * len(yv)
-        beta = np.cov(xv, yv)[0, 1] / (np.var(xv) + 1e-10)
+        # use ddof=1 in BOTH cov and var so the unit-scale factor
+        # cancels (np.cov defaults to ddof=1, np.var to ddof=0)
+        beta = np.cov(xv, yv, ddof=1)[0, 1] / (np.var(xv, ddof=1) + 1e-10)
         y_hat = beta * xv + yv.mean() - beta * xv.mean()
         ss_res = np.sum((yv - y_hat) ** 2)
         r2 = 1.0 - ss_res / (ss_tot + 1e-10) if ss_tot > 0 else 0

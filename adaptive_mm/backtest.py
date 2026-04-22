@@ -190,11 +190,14 @@ def process_mbo_day(df: pd.DataFrame) -> dict[str, np.ndarray]:
         for lvl in ('L1', 'L2', 'deep'):
             A[f'c_add_{side}_{lvl}'] = make(np.float64)
             A[f'c_canc_{side}_{lvl}'] = make(np.float64)
+            # NEW: level-decomposed fill size counters
+            # (trade-induced depletion of L1/L2/deep on passive side)
+            A[f'c_fill_{side}_{lvl}'] = make(np.float64)
 
     # quote dynamics arrays (Hasbrouck & Saar 2009, Huang & Stoll 1997)
     for name in ['c_bid_up', 'c_bid_dn', 'c_ask_up', 'c_ask_dn',
                  'c_spread_widen', 'c_spread_narrow', 'c_flicker',
-                 'c_spread_time']:
+                 'c_spread_time', 'c_wall_time']:
         A[name] = make(np.float64)
 
     # running counters: aggregate
@@ -202,18 +205,29 @@ def process_mbo_day(df: pd.DataFrame) -> dict[str, np.ndarray]:
     r_cbn = r_can = r_mbn = r_man = 0.0
     r_fbn = r_fan = r_fbsz = r_fasz = 0.0
 
-    # running counters: level-relative
+    # running counters: level-relative (adds, cancels, fills)
     r_ab1 = r_ab2 = r_abd = 0.0
     r_aa1 = r_aa2 = r_aad = 0.0
     r_cb1 = r_cb2 = r_cbd = 0.0
     r_ca1 = r_ca2 = r_cad = 0.0
+    r_fb1 = r_fb2 = r_fbd = 0.0
+    r_fa1 = r_fa2 = r_fad = 0.0
 
     # running counters: quote dynamics
     r_bid_up = r_bid_dn = r_ask_up = r_ask_dn = 0.0
     r_spread_widen = r_spread_narrow = r_flicker = 0.0
     r_spread_time = 0.0
+    r_wall_time = 0.0
     prev_bb = prev_ba = prev_spread = 0
     prev_ts = 0
+
+    # proper Hasbrouck & Saar flicker: count round-trip BBO moves
+    # (up->down or down->up on the same side) within FLICKER_WINDOW_NS
+    FLICKER_WINDOW_NS = 50_000_000
+    last_bid_chg_ts = 0
+    last_bid_chg_dir = 0
+    last_ask_chg_ts = 0
+    last_ask_chg_dir = 0
 
     tidx = 0
     last_mid = 0.0
@@ -265,8 +279,19 @@ def process_mbo_day(df: pd.DataFrame) -> dict[str, np.ndarray]:
             if sc == SIDE_BID: r_mbn += 1
             else:              r_man += 1
         elif ac == ACT_FILL:
-            if sc == SIDE_BID: r_fbn += 1; r_fbsz += sz
-            else:              r_fan += 1; r_fasz += sz
+            # fills deplete the PASSIVE side at whatever level the
+            # resting order was sitting. `off` is already the correct
+            # level offset for the passive order (sc is the order's side).
+            if sc == SIDE_BID:
+                r_fbn += 1; r_fbsz += sz
+                if off <= 0:   r_fb1 += sz
+                elif off == 1: r_fb2 += sz
+                else:          r_fbd += sz
+            else:
+                r_fan += 1; r_fasz += sz
+                if off <= 0:   r_fa1 += sz
+                elif off == 1: r_fa2 += sz
+                else:          r_fad += sz
 
         trade = book.process_fast(ac, sc, pt, sz, order_ids[i], ts_i)
 
@@ -275,19 +300,39 @@ def process_mbo_day(df: pd.DataFrame) -> dict[str, np.ndarray]:
         cur_ba = book._best_ask if book._best_ask is not None else 0
         cur_spread = cur_ba - cur_bb if (cur_bb > 0 and cur_ba > 0) else 0
 
-        if prev_bb > 0:
-            if cur_bb > prev_bb: r_bid_up += 1; r_flicker += 1
-            elif cur_bb < prev_bb: r_bid_dn += 1; r_flicker += 1
-        if prev_ba > 0:
-            if cur_ba > prev_ba: r_ask_up += 1; r_flicker += 1
-            elif cur_ba < prev_ba: r_ask_dn += 1; r_flicker += 1
+        if prev_bb > 0 and cur_bb > 0 and cur_bb != prev_bb:
+            cur_dir = 1 if cur_bb > prev_bb else -1
+            if cur_dir > 0: r_bid_up += 1
+            else:           r_bid_dn += 1
+            # flicker = reversal within FLICKER_WINDOW_NS (Hasbrouck & Saar 2009)
+            if (last_bid_chg_dir != 0
+                    and cur_dir * last_bid_chg_dir < 0
+                    and (ts_i - last_bid_chg_ts) <= FLICKER_WINDOW_NS):
+                r_flicker += 1
+            last_bid_chg_ts = ts_i
+            last_bid_chg_dir = cur_dir
+        if prev_ba > 0 and cur_ba > 0 and cur_ba != prev_ba:
+            cur_dir = 1 if cur_ba > prev_ba else -1
+            if cur_dir > 0: r_ask_up += 1
+            else:           r_ask_dn += 1
+            if (last_ask_chg_dir != 0
+                    and cur_dir * last_ask_chg_dir < 0
+                    and (ts_i - last_ask_chg_ts) <= FLICKER_WINDOW_NS):
+                r_flicker += 1
+            last_ask_chg_ts = ts_i
+            last_ask_chg_dir = cur_dir
         if prev_spread > 0 and cur_spread > 0:
             if cur_spread > prev_spread: r_spread_widen += 1
             elif cur_spread < prev_spread: r_spread_narrow += 1
 
-        # time-weighted spread: spread * time_delta_ns
-        if prev_ts > 0 and prev_spread > 0:
-            r_spread_time += prev_spread * (ts_i - prev_ts)
+        # time-weighted spread: spread * wall_dt, plus total wall-time
+        # accumulator so rolling windows can divide by elapsed ns.
+        if prev_ts > 0:
+            dt_ns = ts_i - prev_ts
+            if dt_ns > 0:
+                r_wall_time += dt_ns
+                if prev_spread > 0:
+                    r_spread_time += prev_spread * dt_ns
 
         prev_bb = cur_bb
         prev_ba = cur_ba
@@ -368,6 +413,12 @@ def process_mbo_day(df: pd.DataFrame) -> dict[str, np.ndarray]:
         A['c_canc_ask_L1'][tidx] = r_ca1
         A['c_canc_ask_L2'][tidx] = r_ca2
         A['c_canc_ask_deep'][tidx] = r_cad
+        A['c_fill_bid_L1'][tidx] = r_fb1
+        A['c_fill_bid_L2'][tidx] = r_fb2
+        A['c_fill_bid_deep'][tidx] = r_fbd
+        A['c_fill_ask_L1'][tidx] = r_fa1
+        A['c_fill_ask_L2'][tidx] = r_fa2
+        A['c_fill_ask_deep'][tidx] = r_fad
 
         # quote dynamics cumulative counters
         A['c_bid_up'][tidx] = r_bid_up
@@ -378,6 +429,7 @@ def process_mbo_day(df: pd.DataFrame) -> dict[str, np.ndarray]:
         A['c_spread_narrow'][tidx] = r_spread_narrow
         A['c_flicker'][tidx] = r_flicker
         A['c_spread_time'][tidx] = r_spread_time
+        A['c_wall_time'][tidx] = r_wall_time
 
         tidx += 1
 
@@ -443,16 +495,17 @@ def process_mbo_day(df: pd.DataFrame) -> dict[str, np.ndarray]:
     for short, full in _cum_rename.items():
         out[full] = A[short][s].copy()
 
-    # level-relative event counters
+    # level-relative event counters (adds, cancels, fills)
     for side in ('bid', 'ask'):
         for lvl in ('L1', 'L2', 'deep'):
             out[f'cum_add_{side}_{lvl}'] = A[f'c_add_{side}_{lvl}'][s].copy()
             out[f'cum_canc_{side}_{lvl}'] = A[f'c_canc_{side}_{lvl}'][s].copy()
+            out[f'cum_fill_{side}_{lvl}'] = A[f'c_fill_{side}_{lvl}'][s].copy()
 
     # quote dynamics counters
     for name in ['c_bid_up', 'c_bid_dn', 'c_ask_up', 'c_ask_dn',
                  'c_spread_widen', 'c_spread_narrow', 'c_flicker',
-                 'c_spread_time']:
+                 'c_spread_time', 'c_wall_time']:
         out[f'cum_{name[2:]}'] = A[name][s].copy()
 
     return out
@@ -557,6 +610,12 @@ def run_research(days: int | None = None, export: bool = True):
             cum_canc_ask_L1=arrays.get('cum_canc_ask_L1'),
             cum_canc_ask_L2=arrays.get('cum_canc_ask_L2'),
             cum_canc_ask_deep=arrays.get('cum_canc_ask_deep'),
+            cum_fill_bid_L1=arrays.get('cum_fill_bid_L1'),
+            cum_fill_bid_L2=arrays.get('cum_fill_bid_L2'),
+            cum_fill_bid_deep=arrays.get('cum_fill_bid_deep'),
+            cum_fill_ask_L1=arrays.get('cum_fill_ask_L1'),
+            cum_fill_ask_L2=arrays.get('cum_fill_ask_L2'),
+            cum_fill_ask_deep=arrays.get('cum_fill_ask_deep'),
             cum_bid_up=arrays.get('cum_bid_up'),
             cum_bid_dn=arrays.get('cum_bid_dn'),
             cum_ask_up=arrays.get('cum_ask_up'),
@@ -565,6 +624,7 @@ def run_research(days: int | None = None, export: bool = True):
             cum_spread_narrow=arrays.get('cum_spread_narrow'),
             cum_flicker=arrays.get('cum_flicker'),
             cum_spread_time=arrays.get('cum_spread_time'),
+            cum_wall_time=arrays.get('cum_wall_time'),
         )
         feat_df['date'] = date_str
         feat_df['trade_price_ticks'] = arrays['trade_price']

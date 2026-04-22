@@ -204,54 +204,87 @@ def _fit_spread_regression(
                               + b4*gex + b5*|tox|*vol_regime
 
     Provides smooth interpolation between table cells.
+
+    Implementation notes:
+      - Ridge with UNPENALIZED intercept (penalty matrix has 0 at [0,0]).
+      - Features are z-scored before the solve so the alpha*I penalty
+        shrinks each coefficient proportionally to its own scale instead
+        of clobbering small-unit features. After the solve we convert
+        back to raw-unit coefficients so the exported JSON contract
+        (C++ consumption) stays unchanged.
+      - alpha scaled with n: with z-scored features diag(X'X) ~ n, so
+        alpha=1 is effectively zero shrinkage at the sample counts we
+        have. Use alpha_eff = alpha_rel * n.
     """
     n = len(feat_df)
     abs_markout = np.abs(markout)
 
-    # target: for each trade, the half-spread that would break even
-    # conservative: set optimal_hs = max(|markout|, 0.5), clipped to 5
     target_hs = np.clip(abs_markout, 0.5, 5.0)
 
-    X_cols = [np.ones(n)]
-    col_names = ['intercept']
+    # build RAW design (excluding intercept column)
+    raw_cols: list[np.ndarray] = []
+    col_names: list[str] = []
 
-    X_cols.append(tox_abs)
+    raw_cols.append(tox_abs.astype(float))
     col_names.append('abs_toxicity')
 
-    X_cols.append(vol_regime.astype(float))
+    raw_cols.append(vol_regime.astype(float))
     col_names.append('vol_regime')
 
     if 'spread_ticks' in feat_df.columns:
-        X_cols.append(feat_df['spread_ticks'].values.astype(float))
+        raw_cols.append(feat_df['spread_ticks'].values.astype(float))
         col_names.append('spread_ticks')
 
     if gex_values is not None and len(gex_values) == n:
-        gex_z = (gex_values - np.nanmean(gex_values)) / (np.nanstd(gex_values) + 1e-8)
-        X_cols.append(np.nan_to_num(gex_z))
+        gex_raw = np.asarray(gex_values, dtype=float)
+        gex_raw = np.nan_to_num(gex_raw, nan=0.0)
+        raw_cols.append(gex_raw)
         col_names.append('gex_z')
 
-    # interaction: toxicity * vol
-    X_cols.append(tox_abs * vol_regime.astype(float))
+    raw_cols.append((tox_abs * vol_regime.astype(float)))
     col_names.append('tox_x_vol')
 
-    X = np.column_stack(X_cols)
-    valid = np.isfinite(X).all(axis=1) & np.isfinite(target_hs)
-    X = X[valid]
+    X_raw = np.column_stack(raw_cols)
+    valid = np.isfinite(X_raw).all(axis=1) & np.isfinite(target_hs)
+    X_raw = X_raw[valid]
     y = target_hs[valid]
+    n_eff = len(y)
 
-    # ridge regression
-    alpha = 1.0
-    XtX = X.T @ X + alpha * np.eye(X.shape[1])
-    w = np.linalg.solve(XtX, X.T @ y)
+    mu = X_raw.mean(axis=0)
+    sd = X_raw.std(axis=0) + 1e-8
+    X_z = (X_raw - mu) / sd
+    X = np.column_stack([np.ones(n_eff), X_z])
 
-    y_hat = X @ w
-    ss_res = np.sum((y - y_hat)**2)
-    ss_tot = np.sum((y - y.mean())**2)
+    # unpenalized intercept
+    p = X.shape[1]
+    penalty = np.ones(p)
+    penalty[0] = 0.0
+
+    # alpha_rel = 1e-4 puts effective shrinkage ~ 1e-4 per standardized
+    # coefficient (strong enough to tame multicollinearity, weak enough
+    # not to bias the solution at these sample counts)
+    alpha_rel = 1e-4
+    alpha_eff = alpha_rel * n_eff
+    A = X.T @ X + alpha_eff * np.diag(penalty)
+    w_z = np.linalg.solve(A, X.T @ y)
+
+    y_hat = X @ w_z
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
     r2 = 1.0 - ss_res / (ss_tot + 1e-10)
 
-    coeffs = {name: float(w[i]) for i, name in enumerate(col_names)}
+    # convert back to RAW-UNIT coefficients for export
+    #   y = w0 + sum_j w_z[j+1] * (x_j - mu_j)/sd_j
+    #     = (w0 - sum_j w_z[j+1] * mu_j / sd_j) + sum_j (w_z[j+1]/sd_j) * x_j
+    w_raw_intercept = float(w_z[0] - np.sum(w_z[1:] * mu / sd))
+    w_raw_slopes = w_z[1:] / sd
+
+    coeffs: dict[str, float] = {'intercept': w_raw_intercept}
+    for name, w_i in zip(col_names, w_raw_slopes):
+        coeffs[name] = float(w_i)
     coeffs['r2'] = float(r2)
-    coeffs['n_samples'] = int(valid.sum())
+    coeffs['n_samples'] = int(n_eff)
+    coeffs['alpha_eff'] = float(alpha_eff)
 
     return coeffs
 

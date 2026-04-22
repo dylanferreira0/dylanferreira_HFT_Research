@@ -73,6 +73,13 @@ def compute_features(
     cum_canc_ask_L1: np.ndarray | None = None,
     cum_canc_ask_L2: np.ndarray | None = None,
     cum_canc_ask_deep: np.ndarray | None = None,
+    # level-decomposed fill sizes (trade-induced depletion per level)
+    cum_fill_bid_L1: np.ndarray | None = None,
+    cum_fill_bid_L2: np.ndarray | None = None,
+    cum_fill_bid_deep: np.ndarray | None = None,
+    cum_fill_ask_L1: np.ndarray | None = None,
+    cum_fill_ask_L2: np.ndarray | None = None,
+    cum_fill_ask_deep: np.ndarray | None = None,
     # quote dynamics counters (Hasbrouck & Saar 2009, Huang & Stoll 1997)
     cum_bid_up: np.ndarray | None = None,
     cum_bid_dn: np.ndarray | None = None,
@@ -82,6 +89,7 @@ def compute_features(
     cum_spread_narrow: np.ndarray | None = None,
     cum_flicker: np.ndarray | None = None,
     cum_spread_time: np.ndarray | None = None,
+    cum_wall_time: np.ndarray | None = None,
     windows_ns=(10_000_000, 50_000_000, 100_000_000, 200_000_000,
                 500_000_000, 1_000_000_000, 5_000_000_000),
     horizons_ns=(10_000_000, 50_000_000, 100_000_000, 200_000_000,
@@ -198,11 +206,12 @@ def compute_features(
     cum_buy_vol = np.cumsum(trade_size * buy_mask)
     cum_sell_vol = np.cumsum(trade_size * sell_mask)
 
-    # ── realized vol ───────────────────────────────────────
-    mid_diff = np.empty(n)
-    mid_diff[0] = 0.0
-    mid_diff[1:] = np.diff(mid)
-    cum_mid_sq = np.cumsum(mid_diff ** 2)
+    # ── realized vol (log returns, scale-free) ─────────────
+    mid_safe = np.maximum(mid.astype(np.float64), 1e-6)
+    log_ret = np.empty(n, dtype=np.float64)
+    log_ret[0] = 0.0
+    log_ret[1:] = np.log(mid_safe[1:]) - np.log(mid_safe[:-1])
+    cum_mid_sq = np.cumsum(log_ret ** 2)
 
     # ── book resilience (L1 refill speed) ──────────────────
     if has_levels:
@@ -255,6 +264,12 @@ def compute_features(
         p_cb1 = pad(cum_canc_bid_L1); p_cb2 = pad(cum_canc_bid_L2); p_cbd = pad(cum_canc_bid_deep)
         p_ca1 = pad(cum_canc_ask_L1); p_ca2 = pad(cum_canc_ask_L2); p_cad = pad(cum_canc_ask_deep)
 
+    # fill-level pads (trade depletion on passive side)
+    has_fill_levels = cum_fill_bid_L1 is not None
+    if has_fill_levels:
+        p_fb1 = pad(cum_fill_bid_L1); p_fb2 = pad(cum_fill_bid_L2); p_fbd_lvl = pad(cum_fill_bid_deep)
+        p_fa1 = pad(cum_fill_ask_L1); p_fa2 = pad(cum_fill_ask_L2); p_fad_lvl = pad(cum_fill_ask_deep)
+
     # quote dynamics pads (Hasbrouck & Saar 2009)
     has_quote_dyn = cum_flicker is not None
     if has_quote_dyn:
@@ -263,11 +278,19 @@ def compute_features(
         p_sp_widen = pad(cum_spread_widen); p_sp_narrow = pad(cum_spread_narrow)
         p_flicker = pad(cum_flicker)
 
-    # trade-level TWAS: cumsum of (spread * inter-trade-dt) at trade resolution
+    # wall-time weighted TWAS: use message-resolution accumulators from
+    # the backtest loop (cum_spread_time, cum_wall_time) so the spread
+    # trajectory between trades is properly integrated.
+    has_wall_twas = cum_spread_time is not None and cum_wall_time is not None
+    if has_wall_twas:
+        p_spread_time = pad(cum_spread_time.astype(np.float64))
+        p_wall_time = pad(cum_wall_time.astype(np.float64))
+
+    # trade-level TWAS fallback: cumsum of (spread * inter-trade-dt)
     trade_dt = np.empty(n, dtype=np.float64)
     trade_dt[0] = 0.0
     trade_dt[1:] = np.diff(ts).astype(np.float64)
-    trade_dt = np.clip(trade_dt, 0, 60_000_000_000)  # cap gap at 60s
+    trade_dt = np.clip(trade_dt, 0, 60_000_000_000)
     spread_x_dt = spread.astype(np.float64) * trade_dt
     p_spread_dt = pad(np.cumsum(spread_x_dt))
     p_cum_dt = pad(np.cumsum(trade_dt))
@@ -296,27 +319,52 @@ def compute_features(
         )
         feat[f'ofi{s}'] = ofi
 
-        # level-decomposed OFI (Cont et al. 2014, extended)
+        # level-decomposed OFI (Cont, Kukanov, Stoikov 2014):
+        #   bid_net = adds - cancels - fills_that_hit_bid
+        #   ask_net = adds - cancels - fills_that_hit_ask
+        #   OFI_Lk  = bid_net_Lk - ask_net_Lk
+        # Fills (trade-induced depletion) are the aggressor-side flow;
+        # omitting them biases L1 OFI toward passive (quote) churn and
+        # under-represents aggressive trade pressure.
         if has_level_events:
-            ofi_L1 = (
-                (p_ab1[idx_end] - p_ab1[lb]) - (p_cb1[idx_end] - p_cb1[lb])
-                - (p_aa1[idx_end] - p_aa1[lb]) + (p_ca1[idx_end] - p_ca1[lb])
-            )
-            ofi_L2 = (
-                (p_ab2[idx_end] - p_ab2[lb]) - (p_cb2[idx_end] - p_cb2[lb])
-                - (p_aa2[idx_end] - p_aa2[lb]) + (p_ca2[idx_end] - p_ca2[lb])
-            )
-            ofi_deep = (
-                (p_abd[idx_end] - p_abd[lb]) - (p_cbd[idx_end] - p_cbd[lb])
-                - (p_aad[idx_end] - p_aad[lb]) + (p_cad[idx_end] - p_cad[lb])
-            )
+            bid_add_L1 = p_ab1[idx_end] - p_ab1[lb]
+            bid_add_L2 = p_ab2[idx_end] - p_ab2[lb]
+            bid_add_deep = p_abd[idx_end] - p_abd[lb]
+            ask_add_L1 = p_aa1[idx_end] - p_aa1[lb]
+            ask_add_L2 = p_aa2[idx_end] - p_aa2[lb]
+            ask_add_deep = p_aad[idx_end] - p_aad[lb]
+
+            bid_canc_L1 = p_cb1[idx_end] - p_cb1[lb]
+            bid_canc_L2 = p_cb2[idx_end] - p_cb2[lb]
+            bid_canc_deep = p_cbd[idx_end] - p_cbd[lb]
+            ask_canc_L1 = p_ca1[idx_end] - p_ca1[lb]
+            ask_canc_L2 = p_ca2[idx_end] - p_ca2[lb]
+            ask_canc_deep = p_cad[idx_end] - p_cad[lb]
+
+            if has_fill_levels:
+                bid_fill_L1 = p_fb1[idx_end] - p_fb1[lb]
+                bid_fill_L2 = p_fb2[idx_end] - p_fb2[lb]
+                bid_fill_deep = p_fbd_lvl[idx_end] - p_fbd_lvl[lb]
+                ask_fill_L1 = p_fa1[idx_end] - p_fa1[lb]
+                ask_fill_L2 = p_fa2[idx_end] - p_fa2[lb]
+                ask_fill_deep = p_fad_lvl[idx_end] - p_fad_lvl[lb]
+            else:
+                bid_fill_L1 = bid_fill_L2 = bid_fill_deep = 0.0
+                ask_fill_L1 = ask_fill_L2 = ask_fill_deep = 0.0
+
+            ofi_L1 = ((bid_add_L1 - bid_canc_L1 - bid_fill_L1)
+                      - (ask_add_L1 - ask_canc_L1 - ask_fill_L1))
+            ofi_L2 = ((bid_add_L2 - bid_canc_L2 - bid_fill_L2)
+                      - (ask_add_L2 - ask_canc_L2 - ask_fill_L2))
+            ofi_deep = ((bid_add_deep - bid_canc_deep - bid_fill_deep)
+                        - (ask_add_deep - ask_canc_deep - ask_fill_deep))
             feat[f'ofi_L1{s}'] = ofi_L1
             feat[f'ofi_L2{s}'] = ofi_L2
             feat[f'ofi_deep{s}'] = ofi_deep
 
             # cancel intensity at L1 vs deep (market maker fleeing signal)
-            canc_L1 = (p_cb1[idx_end] - p_cb1[lb]) + (p_ca1[idx_end] - p_ca1[lb])
-            canc_deep = (p_cbd[idx_end] - p_cbd[lb]) + (p_cad[idx_end] - p_cad[lb])
+            canc_L1 = bid_canc_L1 + ask_canc_L1
+            canc_deep = bid_canc_deep + ask_canc_deep
             canc_total = canc_L1 + canc_deep + 1e-10
             feat[f'canc_L1_share{s}'] = canc_L1 / canc_total
 
@@ -395,20 +443,31 @@ def compute_features(
             feat[f'bid_move_rate{s}'] = (bid_up_w - bid_dn_w) / np.maximum(bbo_moves, 1.0)
             feat[f'ask_move_rate{s}'] = (ask_up_w - ask_dn_w) / np.maximum(bbo_moves, 1.0)
 
-            # spread widen rate: fraction of spread changes that were widenings
+            # spread widen rate: fraction of spread changes that were
+            # widenings. Default to 0 (no widening events) instead of
+            # 0.5 so z-scoring doesn't produce spikes every time the
+            # window is quiet (most ES windows).
             sp_w = p_sp_widen[idx_end] - p_sp_widen[lb]
             sp_n = p_sp_narrow[idx_end] - p_sp_narrow[lb]
             sp_total = sp_w + sp_n
-            widen_rate = np.full(n, 0.5, dtype=np.float64)
+            widen_rate = np.zeros(n, dtype=np.float64)
             np.divide(sp_w, sp_total, out=widen_rate, where=sp_total > 0)
             feat[f'spread_widen_rate{s}'] = widen_rate
 
-        # time-weighted average spread (Easley et al. 1997)
-        # uses trade-level spread*dt to avoid message-level accumulator baseline issues
-        sp_dt_w = p_spread_dt[idx_end] - p_spread_dt[lb]
-        dt_w = p_cum_dt[idx_end] - p_cum_dt[lb]
-        twas_out = np.full(n, spread.astype(np.float64).mean(), dtype=np.float64)
-        np.divide(sp_dt_w, dt_w, out=twas_out, where=dt_w > 0)
+        # time-weighted average spread (Easley et al. 1997). Prefer the
+        # message-resolution accumulator (cum_spread_time / cum_wall_time)
+        # so we integrate the actual spread trajectory between trades,
+        # not just the spread seen at trade events.
+        if has_wall_twas:
+            sp_t_w = p_spread_time[idx_end] - p_spread_time[lb]
+            wall_w = p_wall_time[idx_end] - p_wall_time[lb]
+            twas_out = np.full(n, spread.astype(np.float64).mean(), dtype=np.float64)
+            np.divide(sp_t_w, wall_w, out=twas_out, where=wall_w > 0)
+        else:
+            sp_dt_w = p_spread_dt[idx_end] - p_spread_dt[lb]
+            dt_w = p_cum_dt[idx_end] - p_cum_dt[lb]
+            twas_out = np.full(n, spread.astype(np.float64).mean(), dtype=np.float64)
+            np.divide(sp_dt_w, dt_w, out=twas_out, where=dt_w > 0)
         feat[f'twas{s}'] = twas_out
 
     # ── forward returns (mid-based) ────────────────────────
