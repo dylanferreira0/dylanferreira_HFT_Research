@@ -188,20 +188,23 @@ class ToxicityModel:
             mu_k = X_tr_raw.mean(axis=0)
             sd_k = X_tr_raw.std(axis=0) + 1e-8
 
-            X_tr = np.column_stack([
-                np.ones(n_train),
-                (X_tr_raw - mu_k) / sd_k,
-            ])
+            X_tr_raw -= mu_k
+            X_tr_raw /= sd_k
+            ones_tr = np.ones((n_train, 1))
+            X_tr = np.concatenate([ones_tr, X_tr_raw], axis=1)
             y_tr = y_all[train_mask]
+            del X_tr_raw, ones_tr
 
-            X_te = np.column_stack([
-                np.ones(n_test),
-                (X_all[test_mask] - mu_k) / sd_k,
-            ])
+            X_te_raw = X_all[test_mask]
+            X_te_raw = (X_te_raw - mu_k) / sd_k
+            ones_te = np.ones((n_test, 1))
+            X_te = np.concatenate([ones_te, X_te_raw], axis=1)
             y_te = y_all[test_mask]
+            del X_te_raw, ones_te
 
             XtX = X_tr.T @ X_tr
             Xty = X_tr.T @ y_tr
+            del X_tr
 
             fold_cache.append({
                 'k': k, 'train_mask': train_mask, 'test_mask': test_mask,
@@ -311,24 +314,23 @@ class ToxicityModel:
         X_tr_raw = X_all[all_valid]
         y_tr = y_all[all_valid]
 
-        # save full-data mean/var (used by online predict / predict_batch)
         mu_all = X_tr_raw.mean(axis=0)
         sd_all = X_tr_raw.std(axis=0) + 1e-8
         self.mean = mu_all
         self.var = sd_all ** 2
         self.n_seen = int(all_valid.sum())
 
-        X_tr = np.column_stack([
-            np.ones(self.n_seen),
-            (X_tr_raw - mu_all) / sd_all,
-        ])
+        X_tr_raw -= mu_all
+        X_tr_raw /= sd_all
+        X_tr = np.concatenate([np.ones((self.n_seen, 1)), X_tr_raw], axis=1)
+        del X_tr_raw
 
         XtX = X_tr.T @ X_tr
         Xty = X_tr.T @ y_tr
         self.w = _ridge_solve(XtX, Xty, best_alpha, penalty_diag)
 
-        # RLS P0 = sigma^2 * (X'X + alpha*D)^-1  (standard Bayesian form)
         y_hat = X_tr @ self.w
+        del X_tr
         resid = y_tr - y_hat
         sigma2 = float(np.var(resid))
         self._resid_var = sigma2 if sigma2 > 0 else 1.0
