@@ -662,7 +662,7 @@ def run_research(days: int | None = None, export: bool = True):
         print(f"  Features: {len(feat_df):,} rows x {feat_df.shape[1]} cols")
         all_features.append(feat_df)
 
-    full_df = pd.concat(all_features, ignore_index=True)
+    full_df = pd.concat(all_features, ignore_index=True).copy()
 
     # ── Fix per-day cumulative counter resets ──
     # Each day starts its cum_* columns at 0. After concat, rolling-window
@@ -687,10 +687,11 @@ def run_research(days: int | None = None, export: bool = True):
     # NaN-safe: zero-fill FEATURES only, preserve NaN in forward-return
     # targets (day-boundary samples whose horizon extends past end-of-day
     # MUST stay NaN so they're excluded from training / evaluation).
-    target_cols = [c for c in full_df.columns
-                   if c.startswith('fwd_return_') or c.startswith('fwd_mp_')]
-    feature_cols = [c for c in full_df.columns if c not in target_cols]
-    full_df[feature_cols] = full_df[feature_cols].fillna(0)
+    target_cols = set(c for c in full_df.columns
+                      if c.startswith('fwd_return_') or c.startswith('fwd_mp_'))
+    for col in full_df.columns:
+        if col not in target_cols and full_df[col].isna().any():
+            full_df[col] = full_df[col].fillna(0)
 
     # ensure ts_ns is monotonically non-decreasing across concatenated
     # days. If files were not date-sorted, searchsorted / EWM order breaks.
