@@ -104,16 +104,16 @@ This is the correct scheme for financial time-series with overlapping labels. Ra
 
 | Metric | Value |
 |---|---|
-| OOF R² | 0.0589 |
-| OOF RMSE | 0.410 ticks |
-| Training samples | 5,396,595 |
-| Fold R² range | [0.015, 0.110] |
+| OOF R² | 0.0614 |
+| OOF RMSE | 0.568 ticks |
+| Training samples | 1,054,594 |
+| Fold R² range | [0.018, 0.082] |
 
 **Data:** Databento MBO, symbol ESU5 (E-mini S&P 500 Sep 2025 contract, instrument id=14160). Full month of August 2025. Typical day: ~9–11.5M raw messages → ~325–370K trades after filtering. Cancel/add ratio roughly 1:1 per day (~3.6–4.4M adds, ~3.6–4.4M cancels, ~670–735K mods).
 
 **Honest limitations:**
 - Single symbol (ESU5) and single month — no cross-symbol or cross-year generalization tested
-- Wide fold R² variance (0.015 to 0.110) signals strong regime dependence — the model generalizes unevenly across market conditions
+- Fold R² variance (0.018 to 0.082) signals some regime dependence — the model generalizes unevenly across market conditions
 - Binary toxic label `|return| > 0` is loose; a threshold in ticks would be more economically meaningful
 - RLS online adaptation is implemented but not live-tested
 - No out-of-sample test on a different symbol or year
@@ -141,7 +141,7 @@ MBO gives individual order lifecycles — every add, cancel, modify, and fill wi
 ## 7. Things to NOT overclaim *(internal only)*
 
 - **Single symbol, single month** — full August 2025 on ESU5 is a real dataset (~7M+ trades across ~22 trading days), but don't imply multi-symbol or multi-year robustness.
-- **Fold R² variance is high** — don't present 0.059 as a stable number; it's an average of 0.015–0.110.
+- **Fold R² variance exists** — don't present 0.061 as a stable number; it's an average of 0.018–0.082.
 - **RLS online adaptation is not live-tested** — it's implemented and architecturally sound, but I haven't run it in production.
 - **No live trading PnL** — the backtest and TCA are on the same dataset the model was fit on (holdout is 40%, which is reasonable but not a separate out-of-sample year).
 - **The GEX/options pipeline is separate from the toxicity model** — the 42-feature toxicity model does not include any options features. GEX would only affect spread tables **after** `gex_values` is passed into `run_spread_optimization`; the default `run_research` path does not.
