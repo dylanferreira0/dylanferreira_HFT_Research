@@ -129,7 +129,7 @@ def adverse_selection_by_regime(df: pd.DataFrame):
 
     # by L1 imbalance
     imb = df['imbalance'].values
-    for label, lo, hi in [('bid_heavy', 0.33, 2), ('balanced', -0.33, 0.33), ('ask_heavy', -2, -0.33)]:
+    for label, lo, hi in [('bid_heavy', 0.33, np.inf), ('balanced', -0.33, 0.33), ('ask_heavy', -np.inf, -0.33)]:
         mask = (imb >= lo) & (imb < hi) & np.isfinite(adverse)
         if mask.sum() > 0:
             out[f'imbalance_{label}'] = {
@@ -201,7 +201,8 @@ def queue_dynamics_analysis(df: pd.DataFrame):
                 }
 
     # queue depletion before large moves
-    if 'fwd_return_1000ms' in df.columns and 'bid_depletion_500ms' in df.columns:
+    if ('fwd_return_1000ms' in df.columns and 'bid_depletion_500ms' in df.columns
+            and 'ask_depletion_500ms' in df.columns):
         fwd = df['fwd_return_1000ms'].values / TICK
         bd = df['bid_depletion_500ms'].values
         ad = df['ask_depletion_500ms'].values

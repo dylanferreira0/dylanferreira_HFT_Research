@@ -45,8 +45,9 @@ class MarkovModel:
         return sp_bucket * self.N_IMBALANCE_BUCKETS + imb_bucket
 
     def discretize_price_change(self, change_ticks: np.ndarray) -> np.ndarray:
-        capped = np.clip(np.asarray(change_ticks, dtype=int),
-                         -self.MAX_CHANGE, self.MAX_CHANGE)
+        arr = np.asarray(change_ticks, dtype=np.float64)
+        arr = np.where(np.isfinite(arr), arr, 0.0)
+        capped = np.clip(arr.astype(int), -self.MAX_CHANGE, self.MAX_CHANGE)
         return capped + self.MAX_CHANGE
 
     def detect_regimes(self, realized_vol: np.ndarray) -> np.ndarray:
@@ -67,6 +68,12 @@ class MarkovModel:
 
     def fit(self, spread_ticks, imbalance, price_change_ticks, realized_vol):
         """Estimate regime-conditional price-change distributions from training data."""
+        valid = (np.isfinite(spread_ticks) & np.isfinite(imbalance)
+                 & np.isfinite(price_change_ticks) & np.isfinite(realized_vol))
+        spread_ticks = np.asarray(spread_ticks)[valid]
+        imbalance = np.asarray(imbalance)[valid]
+        price_change_ticks = np.asarray(price_change_ticks)[valid]
+        realized_vol = np.asarray(realized_vol)[valid]
         sp  = self.discretize_spread(spread_ticks)
         imb = self.discretize_imbalance(imbalance)
         states   = self.state_index(sp, imb)
@@ -130,7 +137,7 @@ class MarkovModel:
         for r in range(self.N_REGIMES):
             avg_dist = self.probs[r].mean(axis=0)
             mu  = np.dot(avg_dist, self.outcome_values)
-            std = np.sqrt(np.dot(avg_dist, self.outcome_values ** 2) - mu ** 2)
+            std = np.sqrt(max(0.0, np.dot(avg_dist, (self.outcome_values - mu) ** 2)))
             total_obs = int(self.counts[r].sum())
             label = ['LOW-VOL', 'MID-VOL', 'HIGH-VOL'][r]
             lines.append(f"  {label}: E[Δ]={mu:+.3f} ticks  σ={std:.3f} ticks  "

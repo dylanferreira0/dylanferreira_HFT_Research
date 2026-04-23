@@ -234,7 +234,7 @@ class ToxicityModel:
                 continue
             res = y_all[m] - preds[m]
             var_y = float(np.var(y_all[m]))
-            r2 = 1.0 - float(np.var(res)) / (var_y + 1e-12)
+            r2 = 1.0 - float(np.mean(res ** 2)) / (var_y + 1e-12)
             alpha_scores[float(a)] = r2
             if r2 > best_r2:
                 best_r2 = r2
@@ -299,7 +299,7 @@ class ToxicityModel:
                   f"mean P(toxic)={oof_calib.mean():.3f}")
 
             oof_res = oof_true - oof_scores
-            oof_r2 = 1.0 - float(np.var(oof_res)) / (float(np.var(oof_true)) + 1e-12)
+            oof_r2 = 1.0 - float(np.mean(oof_res ** 2)) / (float(np.var(oof_true)) + 1e-12)
             oof_rmse = float(np.sqrt(np.mean(oof_res ** 2)))
         else:
             oof_r2 = float('nan')
@@ -400,8 +400,10 @@ class ToxicityModel:
 
     def update(self, x_raw: np.ndarray, y_true: float) -> float:
         """One-sample RLS step. Returns predicted value BEFORE update."""
-        self._update_norm(x_raw)
+        if np.any(np.isnan(x_raw)) or np.isnan(y_true):
+            return self.predict_single(x_raw) if not np.any(np.isnan(x_raw)) else 0.0
         x = self._design(self._normalize(x_raw))
+        self._update_norm(x_raw)
 
         if len(x) != len(self.w):
             return 0.0
@@ -428,11 +430,13 @@ class ToxicityModel:
     def predict_batch(self, df) -> np.ndarray:
         cols = self.active_features if self.active_features else get_regressor_names()
         available = [c for c in cols if c in df.columns]
+        indices = [cols.index(c) for c in available]
         X_raw = df[available].values.astype(np.float64)
-        X_norm = (X_raw - self.mean[:len(available)]) / np.sqrt(self.var[:len(available)] + 1e-8)
+        X_norm = (X_raw - self.mean[indices]) / np.sqrt(self.var[indices] + 1e-8)
         X_norm = np.nan_to_num(X_norm)
         X = np.column_stack([np.ones(len(X_norm)), X_norm])
-        return X @ self.w[:X.shape[1]]
+        w_idx = [0] + [i + 1 for i in indices]
+        return X @ self.w[w_idx]
 
     def calibrate(self, raw_scores: np.ndarray) -> np.ndarray:
         """Map raw regression scores to calibrated P(toxic) via isotonic."""

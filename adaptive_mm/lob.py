@@ -148,7 +148,7 @@ class LOB:
         """
         self.n_msgs += 1
 
-        if price_ticks <= 0 and act_code not in (ACT_CLEAR, ACT_CANCEL):
+        if price_ticks <= 0 and act_code not in (ACT_CLEAR, ACT_CANCEL, ACT_FILL):
             return None
 
         if act_code == ACT_ADD:
@@ -174,6 +174,8 @@ class LOB:
         return None
 
     def _add(self, oid: int, pt: int, size: int, side: int):
+        if size <= 0:
+            return
         existing = self.orders.get(oid)
         if existing is not None:
             self._cancel(oid)
@@ -225,34 +227,42 @@ class LOB:
         remaining = order_size - fill_size
 
         if side == SIDE_BID:
-            level = self.bid_orders.get(pt, {})
+            if pt not in self.bid_orders:
+                self.orders.pop(oid, None)
+                return
+            level = self.bid_orders[pt]
+            actual_sz = min(fill_size, self.bid_sizes.get(pt, 0))
             if remaining <= 0:
                 level.pop(oid, None)
                 self.orders.pop(oid, None)
-                self.bid_sizes[pt] -= order_size
-                self.total_bid_size -= order_size
+                self.bid_sizes[pt] -= actual_sz
+                self.total_bid_size -= actual_sz
             else:
                 level[oid] = remaining
                 self.orders[oid] = (pt, remaining, side)
-                self.bid_sizes[pt] -= fill_size
-                self.total_bid_size -= fill_size
+                self.bid_sizes[pt] -= actual_sz
+                self.total_bid_size -= actual_sz
             if self.bid_sizes.get(pt, 0) <= 0:
                 self.bid_sizes.pop(pt, None)
                 self.bid_orders.pop(pt, None)
                 if pt == self._best_bid:
                     self._best_bid = max(self.bid_sizes) if self.bid_sizes else None
         else:
-            level = self.ask_orders.get(pt, {})
+            if pt not in self.ask_orders:
+                self.orders.pop(oid, None)
+                return
+            level = self.ask_orders[pt]
+            actual_sz = min(fill_size, self.ask_sizes.get(pt, 0))
             if remaining <= 0:
                 level.pop(oid, None)
                 self.orders.pop(oid, None)
-                self.ask_sizes[pt] -= order_size
-                self.total_ask_size -= order_size
+                self.ask_sizes[pt] -= actual_sz
+                self.total_ask_size -= actual_sz
             else:
                 level[oid] = remaining
                 self.orders[oid] = (pt, remaining, side)
-                self.ask_sizes[pt] -= fill_size
-                self.total_ask_size -= fill_size
+                self.ask_sizes[pt] -= actual_sz
+                self.total_ask_size -= actual_sz
             if self.ask_sizes.get(pt, 0) <= 0:
                 self.ask_sizes.pop(pt, None)
                 self.ask_orders.pop(pt, None)

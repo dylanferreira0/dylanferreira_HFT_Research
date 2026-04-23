@@ -45,7 +45,9 @@ def _classify_gex(gex_values: np.ndarray) -> np.ndarray:
     if gex_values is None or len(gex_values) == 0:
         return np.ones(0, dtype=int)
     q33, q67 = np.nanpercentile(gex_values, [33, 67])
-    return np.clip(np.digitize(gex_values, [q33, q67]), 0, 2)
+    result = np.clip(np.digitize(gex_values, [q33, q67]), 0, 2)
+    result[~np.isfinite(gex_values)] = 1
+    return result
 
 
 def compute_markout_payoffs(
@@ -104,29 +106,7 @@ def estimate_fill_probability(
     future_idx = np.searchsorted(ts_ns, ts_ns + horizon_ns)
     future_idx_c = np.minimum(future_idx, n)
 
-    # Vectorized approach: compute running cummax / cummin over mid,
-    # then excursion for each trade is just a lookup.
-    # max_mid_from[j] = max(mid[j:]) is the "suffix max" starting at j.
-    # For trade i with horizon ending at future_idx_c[i], we need
-    # max(mid[i+1:end]) = max of a sub-suffix. Instead, we compute
-    # excursion per trade using a single pass.
-
     is_buy = (trade_side == 0)
-
-    # Pre-compute suffix max and suffix min (reversed cummax/cummin)
-    # suffix_max[i] = max(mid[i], mid[i+1], ..., mid[n-1])
-    suffix_max = np.copy(mid)
-    suffix_min = np.copy(mid)
-    for j in range(n - 2, -1, -1):
-        suffix_max[j] = max(suffix_max[j], suffix_max[j + 1])
-        suffix_min[j] = min(suffix_min[j], suffix_min[j + 1])
-
-    # For each trade i we need max(mid[i+1:end_i]) where end_i = future_idx_c[i].
-    # suffix_max gives max(mid[i+1:n]), which is an upper bound.
-    # To get the correct windowed max, we use a different approach:
-    # Sparse table / segment tree would be ideal, but for simplicity
-    # we use the observation that for monotone end_i (since ts is sorted,
-    # end_i is non-decreasing), we can use a deque-based sliding window.
 
     excursion = np.zeros(n, dtype=np.float64)
     valid = np.zeros(n, dtype=bool)
@@ -184,7 +164,7 @@ def compute_optimal_spread_table(
     Build the optimal spread lookup table.
 
     For each (vol_regime, tox_decile, [gex_regime]):
-        optimal_hs = argmax_{hs} E[ P(fill|hs) * (hs - |markout|) ]
+        optimal_hs = argmax_{hs} E[ P(fill|hs) * (hs - markout) ]
 
     P(fill|hs) decreases with hs (wider quotes get filled less often),
     which is the key ingredient the old formula was missing. Without it,
@@ -244,7 +224,6 @@ def compute_optimal_spread_table(
                     continue
 
                 mo = markout[mask]
-                abs_mo = np.abs(mo)
                 fill_sub = fill_mat[mask]  # (n_trades, n_hs)
 
                 best_hs = 1.0
@@ -254,8 +233,7 @@ def compute_optimal_spread_table(
                     filled = fill_sub[:, j]
                     if filled.sum() < 10:
                         continue
-                    # conditional PnL per fill: we capture hs, lose |markout|
-                    per_fill_pnl = hs - abs_mo[filled]
+                    per_fill_pnl = hs - mo[filled]
                     # expected PnL per trade = P(fill) * E[pnl | fill]
                     p_fill = float(filled.mean())
                     ev = p_fill * float(per_fill_pnl.mean())
@@ -310,9 +288,7 @@ def _fit_spread_regression(
         have. Use alpha_eff = alpha_rel * n.
     """
     n = len(feat_df)
-    abs_markout = np.abs(markout)
-
-    target_hs = np.clip(abs_markout, 0.5, 5.0)
+    target_hs = np.clip(np.abs(markout), 0.5, 5.0)
 
     # build RAW design (excluding intercept column)
     raw_cols: list[np.ndarray] = []

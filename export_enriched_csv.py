@@ -188,7 +188,11 @@ def export_enriched(days=None, output_file='enriched_es_data.csv'):
         )
 
         feat_df['date'] = date_str
-        feat_df.fillna(0, inplace=True)
+        target_cols = [c for c in feat_df.columns
+                       if c.startswith('fwd_return_') or c.startswith('fwd_mp_')]
+        fill_cols = [c for c in feat_df.columns if c not in target_cols
+                     and c not in ('date', 'ts_ns')]
+        feat_df[fill_cols] = feat_df[fill_cols].fillna(0)
 
         # compute regressors
         reg_df = compute_regressors(feat_df)
@@ -256,7 +260,7 @@ def export_enriched(days=None, output_file='enriched_es_data.csv'):
     combined = pd.concat(all_rows, ignore_index=True)
     combined = combined.sort_values('timestamp_ns').reset_index(drop=True)
 
-    combined.to_csv(output_file, index=False, float_format='%.6f')
+    combined.to_csv(output_file, index=False, float_format='%.10g')
     size_mb = Path(output_file).stat().st_size / 1e6
     print(f"\nExported: {output_file} ({len(combined):,} rows, {size_mb:.1f} MB)")
     print(f"Columns: {len(combined.columns)}")

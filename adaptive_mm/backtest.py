@@ -306,43 +306,20 @@ def process_mbo_day(df: pd.DataFrame) -> dict[str, np.ndarray]:
                 if off <= 0:   r_aa1 += sz
                 elif off == 1: r_aa2 += sz
                 else:          r_aad += sz
-        elif ac in (ACT_FILL, ACT_TRADE):
-            # Both ACT_FILL and ACT_TRADE deplete the PASSIVE side.
-            # For ACT_FILL, `sc` is the resting order's side and `off`
-            # is correct. For ACT_TRADE, `sc` is the AGGRESSOR side —
-            # the resting (passive) order is on the OPPOSITE side. The
-            # trade price is at the passive side's level, so offset
-            # against the passive side's BBO.
-            if ac == ACT_TRADE:
-                # passive side is opposite of aggressor
-                if sc == SIDE_BID:
-                    # aggressor is bid (buy) → passive resting order is ask
-                    ba = book._best_ask
-                    off_passive = (pt - ba) if (ba is not None and pt > 0) else 0
-                    r_fan += 1; r_fasz += sz
-                    if off_passive <= 0:   r_fa1 += sz
-                    elif off_passive == 1: r_fa2 += sz
-                    else:                  r_fad += sz
-                else:
-                    # aggressor is ask (sell) → passive resting order is bid
-                    bb = book._best_bid
-                    off_passive = (bb - pt) if (bb is not None and pt > 0) else 0
-                    r_fbn += 1; r_fbsz += sz
-                    if off_passive <= 0:   r_fb1 += sz
-                    elif off_passive == 1: r_fb2 += sz
-                    else:                  r_fbd += sz
-            else:
-                # ACT_FILL: sc IS the resting side, off is already correct
-                if sc == SIDE_BID:
-                    r_fbn += 1; r_fbsz += sz
-                    if off <= 0:   r_fb1 += sz
-                    elif off == 1: r_fb2 += sz
-                    else:          r_fbd += sz
-                else:
-                    r_fan += 1; r_fasz += sz
-                    if off <= 0:   r_fa1 += sz
-                    elif off == 1: r_fa2 += sz
-                    else:          r_fad += sz
+        elif ac == ACT_FILL:
+            # ACT_FILL: sc IS the resting side, off is already correct.
+            # Only count fills here — ACT_TRADE is a summary message and
+            # counting both would double the fill counters.
+            if sc == SIDE_BID:
+                r_fbn += 1; r_fbsz += sz
+                if off <= 0:   r_fb1 += sz
+                elif off == 1: r_fb2 += sz
+                else:          r_fbd += sz
+            elif sc == SIDE_ASK:
+                r_fan += 1; r_fasz += sz
+                if off <= 0:   r_fa1 += sz
+                elif off == 1: r_fa2 += sz
+                else:          r_fad += sz
 
         trade = book.process_fast(ac, sc, pt, sz, order_ids[i], ts_i)
 

@@ -95,6 +95,7 @@ def compute_features(
     horizons_ns=(10_000_000, 50_000_000, 100_000_000, 200_000_000,
                  500_000_000, 1_000_000_000, 5_000_000_000, 10_000_000_000),
 ) -> pd.DataFrame:
+    ts = np.asarray(ts, dtype=np.int64)
     n = len(ts)
     if n == 0:
         return pd.DataFrame()
@@ -291,7 +292,10 @@ def compute_features(
     trade_dt[0] = 0.0
     trade_dt[1:] = np.diff(ts).astype(np.float64)
     trade_dt = np.clip(trade_dt, 0, 60_000_000_000)
-    spread_x_dt = spread.astype(np.float64) * trade_dt
+    spread_f = spread.astype(np.float64)
+    spread_x_dt = np.empty(n, dtype=np.float64)
+    spread_x_dt[0] = 0.0
+    spread_x_dt[1:] = spread_f[:-1] * trade_dt[1:]
     p_spread_dt = pad(np.cumsum(spread_x_dt))
     p_cum_dt = pad(np.cumsum(trade_dt))
 
@@ -403,15 +407,14 @@ def compute_features(
         feat[f'trade_rate{s}'] = n_trades / (wms / 1000.0)
 
         sum_sq = p_msq[idx_end] - p_msq[lb]
-        count  = np.maximum(n_trades, 1.0)
-        feat[f'realized_vol{s}'] = np.sqrt(sum_sq / count)
+        feat[f'realized_vol{s}'] = np.sqrt(sum_sq)
 
-        bsz_start = p_bsz[lb]
-        bsz_end   = p_bsz[idx_end]
-        asz_start  = p_asz[lb]
-        asz_end    = p_asz[idx_end]
-        feat[f'bid_depletion{s}'] = bsz_start - bsz_end
-        feat[f'ask_depletion{s}'] = asz_start - asz_end
+        bsz_lb = bid_size_l1.astype(np.float64)[np.clip(lb, 0, n - 1)]
+        bsz_now = bid_size_l1.astype(np.float64)
+        asz_lb = ask_size_l1.astype(np.float64)[np.clip(lb, 0, n - 1)]
+        asz_now = ask_size_l1.astype(np.float64)
+        feat[f'bid_depletion{s}'] = bsz_lb - bsz_now
+        feat[f'ask_depletion{s}'] = asz_lb - asz_now
 
         if has_delta:
             delta_sum = p_delta[idx_end] - p_delta[lb]

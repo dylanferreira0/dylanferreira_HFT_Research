@@ -68,7 +68,7 @@ def _zscore(x: np.ndarray, halflife: int) -> np.ndarray:
     s = pd.Series(x, dtype=np.float64)
     ewm = s.ewm(halflife=halflife)
     mu = ewm.mean().values
-    var = np.maximum(ewm.var().values, 1e-12)
+    var = np.fmax(ewm.var().values, 1e-12)
     return (x - mu) / np.sqrt(var)
 
 
