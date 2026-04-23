@@ -101,27 +101,74 @@ def estimate_fill_probability(
     Returns (n_trades, len(hs_grid)) boolean matrix.
     """
     n = len(mid)
-    # for each trade, compute maximum favorable excursion within horizon
-    # (i.e. how far did the mid move THROUGH our quote on the passive side?)
     future_idx = np.searchsorted(ts_ns, ts_ns + horizon_ns)
     future_idx_c = np.minimum(future_idx, n)
 
-    fills = np.zeros((n, len(hs_grid)), dtype=bool)
+    # Vectorized approach: compute running cummax / cummin over mid,
+    # then excursion for each trade is just a lookup.
+    # max_mid_from[j] = max(mid[j:]) is the "suffix max" starting at j.
+    # For trade i with horizon ending at future_idx_c[i], we need
+    # max(mid[i+1:end]) = max of a sub-suffix. Instead, we compute
+    # excursion per trade using a single pass.
+
+    is_buy = (trade_side == 0)
+
+    # Pre-compute suffix max and suffix min (reversed cummax/cummin)
+    # suffix_max[i] = max(mid[i], mid[i+1], ..., mid[n-1])
+    suffix_max = np.copy(mid)
+    suffix_min = np.copy(mid)
+    for j in range(n - 2, -1, -1):
+        suffix_max[j] = max(suffix_max[j], suffix_max[j + 1])
+        suffix_min[j] = min(suffix_min[j], suffix_min[j + 1])
+
+    # For each trade i we need max(mid[i+1:end_i]) where end_i = future_idx_c[i].
+    # suffix_max gives max(mid[i+1:n]), which is an upper bound.
+    # To get the correct windowed max, we use a different approach:
+    # Sparse table / segment tree would be ideal, but for simplicity
+    # we use the observation that for monotone end_i (since ts is sorted,
+    # end_i is non-decreasing), we can use a deque-based sliding window.
+
+    excursion = np.zeros(n, dtype=np.float64)
+    valid = np.zeros(n, dtype=bool)
+
+    # Sliding window max/min for buy / sell aggressors separately.
+    # Since we need max(mid[i+1:end_i]) for buys and min for sells,
+    # and both i and end_i advance monotonically, we use a deque.
+    from collections import deque
+    dq_max = deque()  # indices of mid values, front = max
+    dq_min = deque()  # indices of mid values, front = min
+    ptr = 0  # right pointer into mid that's been added to deques
+
     for i in range(n):
-        end = future_idx_c[i]
-        if end <= i:
+        end_i = future_idx_c[i]
+        start_i = i + 1
+        if start_i >= end_i:
             continue
-        window_mid = mid[i + 1:end]
-        if len(window_mid) == 0:
+        # expand the right side of the window up to end_i
+        while ptr < end_i:
+            while dq_max and mid[ptr] >= mid[dq_max[-1]]:
+                dq_max.pop()
+            dq_max.append(ptr)
+            while dq_min and mid[ptr] <= mid[dq_min[-1]]:
+                dq_min.pop()
+            dq_min.append(ptr)
+            ptr += 1
+        # shrink the left side: remove indices < start_i
+        while dq_max and dq_max[0] < start_i:
+            dq_max.popleft()
+        while dq_min and dq_min[0] < start_i:
+            dq_min.popleft()
+        if not dq_max:
             continue
-        # market-maker's passive side: if aggressor buys, our ask was hit,
-        # so we care about how far mid went UP (ask excursion).
-        # if aggressor sells, our bid was hit, care about DOWN (bid excursion).
-        if trade_side[i] == 0:  # buy aggressor → our ask filled
-            excursion = (np.max(window_mid) - mid[i]) / TICK_SIZE
-        else:  # sell aggressor → our bid filled
-            excursion = (mid[i] - np.min(window_mid)) / TICK_SIZE
-        fills[i] = hs_grid <= excursion
+        valid[i] = True
+        if is_buy[i]:
+            excursion[i] = (mid[dq_max[0]] - mid[i]) / TICK_SIZE
+        else:
+            excursion[i] = (mid[i] - mid[dq_min[0]]) / TICK_SIZE
+
+    # Broadcast: fills[i, j] = True if hs_grid[j] <= excursion[i]
+    fills = np.zeros((n, len(hs_grid)), dtype=bool)
+    fills[valid] = hs_grid[np.newaxis, :] <= excursion[valid, np.newaxis]
     return fills
 
 

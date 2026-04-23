@@ -376,8 +376,8 @@ def compute_features(
 
         feat[f'n_trades{s}'] = n_trades
         feat[f'signed_volume{s}'] = signed_vol
-        feat[f'vpin{s}'] = np.where(total_vol > 0,
-                                     np.abs(signed_vol) / total_vol, 0.0)
+        feat[f'vol_imbalance{s}'] = np.where(total_vol > 0,
+                                              np.abs(signed_vol) / total_vol, 0.0)
 
         n_canc = (p_cbn[idx_end] - p_cbn[lb]) + (p_can[idx_end] - p_can[lb])
         feat[f'cancel_trade_ratio{s}'] = n_canc / np.maximum(n_trades, 1.0)
@@ -403,7 +403,7 @@ def compute_features(
         feat[f'trade_rate{s}'] = n_trades / (wms / 1000.0)
 
         sum_sq = p_msq[idx_end] - p_msq[lb]
-        count  = np.maximum(n_trades - 1.0, 1.0)
+        count  = np.maximum(n_trades, 1.0)
         feat[f'realized_vol{s}'] = np.sqrt(sum_sq / count)
 
         bsz_start = p_bsz[lb]
@@ -461,12 +461,12 @@ def compute_features(
         if has_wall_twas:
             sp_t_w = p_spread_time[idx_end] - p_spread_time[lb]
             wall_w = p_wall_time[idx_end] - p_wall_time[lb]
-            twas_out = np.full(n, spread.astype(np.float64).mean(), dtype=np.float64)
+            twas_out = np.full(n, np.nan, dtype=np.float64)
             np.divide(sp_t_w, wall_w, out=twas_out, where=wall_w > 0)
         else:
             sp_dt_w = p_spread_dt[idx_end] - p_spread_dt[lb]
             dt_w = p_cum_dt[idx_end] - p_cum_dt[lb]
-            twas_out = np.full(n, spread.astype(np.float64).mean(), dtype=np.float64)
+            twas_out = np.full(n, np.nan, dtype=np.float64)
             np.divide(sp_dt_w, dt_w, out=twas_out, where=dt_w > 0)
         feat[f'twas{s}'] = twas_out
 

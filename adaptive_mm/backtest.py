@@ -21,7 +21,7 @@ import databento as db
 
 from .lob import (LOB, TICK_SIZE, price_to_ticks, preprocess_actions_sides,
                   ACT_ADD, ACT_CANCEL, ACT_MODIFY, ACT_TRADE, ACT_FILL,
-                  SIDE_BID, SIDE_ASK)
+                  SIDE_BID, SIDE_ASK, SIDE_NONE)
 from .features import compute_features
 from .markov import MarkovModel
 from .toxicity import ToxicityModel
@@ -249,14 +249,18 @@ def process_mbo_day(df: pd.DataFrame) -> dict[str, np.ndarray]:
             if sc == SIDE_BID:
                 bb = book._best_bid
                 off = (bb - pt) if bb is not None else 0
-            else:
+            elif sc == SIDE_ASK:
                 ba = book._best_ask
                 off = (pt - ba) if ba is not None else 0
+            else:
+                off = 99
         else:
             off = 99
 
-        # aggregate running counters
-        if ac == ACT_ADD:
+        # aggregate running counters (skip SIDE_NONE admin messages)
+        if sc == SIDE_NONE:
+            pass
+        elif ac == ACT_ADD:
             if sc == SIDE_BID:
                 r_absz += sz
                 if off <= 0:   r_ab1 += sz
@@ -279,22 +283,66 @@ def process_mbo_day(df: pd.DataFrame) -> dict[str, np.ndarray]:
                 elif off == 1: r_ca2 += sz
                 else:          r_cad += sz
         elif ac == ACT_MODIFY:
-            if sc == SIDE_BID: r_mbn += 1
-            else:              r_man += 1
-        elif ac == ACT_FILL:
-            # fills deplete the PASSIVE side at whatever level the
-            # resting order was sitting. `off` is already the correct
-            # level offset for the passive order (sc is the order's side).
             if sc == SIDE_BID:
-                r_fbn += 1; r_fbsz += sz
-                if off <= 0:   r_fb1 += sz
-                elif off == 1: r_fb2 += sz
-                else:          r_fbd += sz
+                r_mbn += 1
+                # decompose the cancel half of modify into level buckets
+                if off <= 0:   r_cb1 += sz
+                elif off == 1: r_cb2 += sz
+                else:          r_cbd += sz
+                # the add half goes to the new price — but we only know
+                # the NEW price (pt), not the original, and the offset
+                # was computed against current BBO. Since modify is
+                # cancel-at-old + add-at-new, and we already classified
+                # the old-side offset, we add to the same bucket. The
+                # add at the new price is handled by the LOB internally.
+                if off <= 0:   r_ab1 += sz
+                elif off == 1: r_ab2 += sz
+                else:          r_abd += sz
             else:
-                r_fan += 1; r_fasz += sz
-                if off <= 0:   r_fa1 += sz
-                elif off == 1: r_fa2 += sz
-                else:          r_fad += sz
+                r_man += 1
+                if off <= 0:   r_ca1 += sz
+                elif off == 1: r_ca2 += sz
+                else:          r_cad += sz
+                if off <= 0:   r_aa1 += sz
+                elif off == 1: r_aa2 += sz
+                else:          r_aad += sz
+        elif ac in (ACT_FILL, ACT_TRADE):
+            # Both ACT_FILL and ACT_TRADE deplete the PASSIVE side.
+            # For ACT_FILL, `sc` is the resting order's side and `off`
+            # is correct. For ACT_TRADE, `sc` is the AGGRESSOR side —
+            # the resting (passive) order is on the OPPOSITE side. The
+            # trade price is at the passive side's level, so offset
+            # against the passive side's BBO.
+            if ac == ACT_TRADE:
+                # passive side is opposite of aggressor
+                if sc == SIDE_BID:
+                    # aggressor is bid (buy) → passive resting order is ask
+                    ba = book._best_ask
+                    off_passive = (pt - ba) if (ba is not None and pt > 0) else 0
+                    r_fan += 1; r_fasz += sz
+                    if off_passive <= 0:   r_fa1 += sz
+                    elif off_passive == 1: r_fa2 += sz
+                    else:                  r_fad += sz
+                else:
+                    # aggressor is ask (sell) → passive resting order is bid
+                    bb = book._best_bid
+                    off_passive = (bb - pt) if (bb is not None and pt > 0) else 0
+                    r_fbn += 1; r_fbsz += sz
+                    if off_passive <= 0:   r_fb1 += sz
+                    elif off_passive == 1: r_fb2 += sz
+                    else:                  r_fbd += sz
+            else:
+                # ACT_FILL: sc IS the resting side, off is already correct
+                if sc == SIDE_BID:
+                    r_fbn += 1; r_fbsz += sz
+                    if off <= 0:   r_fb1 += sz
+                    elif off == 1: r_fb2 += sz
+                    else:          r_fbd += sz
+                else:
+                    r_fan += 1; r_fasz += sz
+                    if off <= 0:   r_fa1 += sz
+                    elif off == 1: r_fa2 += sz
+                    else:          r_fad += sz
 
         trade = book.process_fast(ac, sc, pt, sz, order_ids[i], ts_i)
 
@@ -638,6 +686,26 @@ def run_research(days: int | None = None, export: bool = True):
         all_features.append(feat_df)
 
     full_df = pd.concat(all_features, ignore_index=True)
+
+    # ── Fix per-day cumulative counter resets ──
+    # Each day starts its cum_* columns at 0. After concat, rolling-window
+    # deltas (p[i] - p[lb]) across day boundaries would go negative.
+    # Fix: accumulate the end-of-day value as an offset to subsequent days.
+    cum_cols = [c for c in full_df.columns if c.startswith('cum_')]
+    if 'date' in full_df.columns and len(all_features) > 1 and cum_cols:
+        date_vals = full_df['date'].values
+        boundaries = np.where(date_vals[:-1] != date_vals[1:])[0]
+        if len(boundaries) > 0:
+            for col in cum_cols:
+                arr = full_df[col].values.copy().astype(np.float64)
+                offset = 0.0
+                prev_end = 0
+                for bc in boundaries:
+                    arr[prev_end:bc + 1] += offset
+                    offset = arr[bc]  # last value of this day (already shifted)
+                    prev_end = bc + 1
+                arr[prev_end:] += offset
+                full_df[col] = arr
 
     # NaN-safe: zero-fill FEATURES only, preserve NaN in forward-return
     # targets (day-boundary samples whose horizon extends past end-of-day

@@ -126,11 +126,14 @@ def compute_regressors(df: pd.DataFrame,
         mp_diff = np.diff(mp, prepend=mp[0])
         reg['z_microprice_delta'] = _zscore(mp_diff, fast)
 
-    # ── 4. VPIN (Easley et al. 2012) ──────────────────────
+    # ── 4. Volume imbalance (|B-S|/(B+S) over time window) ──
+    # N.B. This is NOT volume-synchronized VPIN (Easley et al. 2012).
     for w in ['500ms', '5000ms']:
-        col = f'vpin_{w}'
+        col = f'vol_imbalance_{w}'
         if col in df.columns:
-            reg[f'z_vpin_{w}'] = _zscore(df[col].values.astype(np.float64), fast)
+            z = _zscore(df[col].values.astype(np.float64), fast)
+            reg[f'z_vol_imbalance_{w}'] = z
+            reg[f'z_vpin_{w}'] = z  # backward-compat alias for C++ / exported models
 
     # ── 5. Kyle's Lambda (price impact) ───────────────────
     # Use L1 OFI for a cleaner lambda estimate
@@ -342,7 +345,7 @@ def get_regressor_names() -> list[str]:
         # Microprice (Stoikov)
         'z_microprice_delta',
         # VPIN
-        'z_vpin_500ms', 'z_vpin_5000ms',
+        'z_vol_imbalance_500ms', 'z_vol_imbalance_5000ms',
         # Kyle's Lambda
         'z_kyle_lambda',
         # Trade arrival

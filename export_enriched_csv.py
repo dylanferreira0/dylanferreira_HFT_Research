@@ -240,7 +240,7 @@ def export_enriched(days=None, output_file='enriched_es_data.csv'):
 
         # add key features that C++ can directly use
         feature_cols = [c for c in feat_df.columns if c.startswith('ofi_L1_') or
-                        c.startswith('imb_L') or c in ('realized_vol_500ms', 'vpin_500ms')]
+                        c.startswith('imb_L') or c in ('realized_vol_500ms', 'vol_imbalance_500ms')]
 
         output_cols = base_cols + enrichment_cols + feature_cols
         output_cols = [c for c in output_cols if c in feat_df.columns]

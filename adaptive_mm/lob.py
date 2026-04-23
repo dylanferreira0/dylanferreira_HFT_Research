@@ -23,6 +23,7 @@ ACT_UNKNOWN = 6
 # side codes
 SIDE_BID = 0
 SIDE_ASK = 1
+SIDE_NONE = 2
 
 _ACTION_MAP = {
     'A': ACT_ADD, 'a': ACT_ADD,
@@ -36,7 +37,7 @@ _ACTION_MAP = {
 _SIDE_MAP = {
     'B': SIDE_BID, 'b': SIDE_BID,
     'A': SIDE_ASK, 'a': SIDE_ASK,
-    'N': SIDE_ASK, 'n': SIDE_ASK,
+    'N': SIDE_NONE, 'n': SIDE_NONE,
 }
 
 
@@ -55,7 +56,7 @@ def preprocess_actions_sides(actions, sides):
     for char, code in _ACTION_MAP.items():
         act_codes[act_arr == char] = code
 
-    side_codes = np.full(n, SIDE_ASK, dtype=np.int8)
+    side_codes = np.full(n, SIDE_NONE, dtype=np.int8)
     for char, code in _SIDE_MAP.items():
         side_codes[side_arr == char] = code
 
@@ -113,9 +114,20 @@ class LOB:
         self.n_mods = 0
 
     @property
-    def mid(self) -> Optional[float]:
+    def is_two_sided(self) -> bool:
+        return self._best_bid is not None and self._best_ask is not None
+
+    @property
+    def is_crossed(self) -> bool:
         bb, ba = self._best_bid, self._best_ask
         if bb is not None and ba is not None:
+            return bb >= ba
+        return False
+
+    @property
+    def mid(self) -> Optional[float]:
+        bb, ba = self._best_bid, self._best_ask
+        if bb is not None and ba is not None and ba > bb:
             return (bb + ba) * TICK_SIZE / 2.0
         return None
 
@@ -123,7 +135,8 @@ class LOB:
     def spread_ticks(self) -> int:
         bb, ba = self._best_bid, self._best_ask
         if bb is not None and ba is not None:
-            return ba - bb
+            s = ba - bb
+            return s if s > 0 else 0
         return 0
 
     def process_fast(self, act_code: int, side_code: int,
@@ -140,17 +153,18 @@ class LOB:
 
         if act_code == ACT_ADD:
             self.n_adds += 1
-            self._add(order_id, price_ticks, size, side_code)
+            if side_code != SIDE_NONE:
+                self._add(order_id, price_ticks, size, side_code)
         elif act_code == ACT_CANCEL:
             self.n_cancels += 1
             self._cancel(order_id)
         elif act_code == ACT_MODIFY:
             self.n_mods += 1
             self._cancel(order_id)
-            self._add(order_id, price_ticks, size, side_code)
+            if side_code != SIDE_NONE:
+                self._add(order_id, price_ticks, size, side_code)
         elif act_code == ACT_TRADE:
             self.n_trades += 1
-            self._fill(order_id, size)
             return TradeEvent(ts_ns, price_ticks, size, side_code)
         elif act_code == ACT_FILL:
             self._fill(order_id, size)
@@ -160,6 +174,9 @@ class LOB:
         return None
 
     def _add(self, oid: int, pt: int, size: int, side: int):
+        existing = self.orders.get(oid)
+        if existing is not None:
+            self._cancel(oid)
         self.orders[oid] = (pt, size, side)
         if side == SIDE_BID:
             self.bid_orders[pt][oid] = size

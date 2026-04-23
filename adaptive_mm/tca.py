@@ -33,6 +33,7 @@ def markout_analysis(df: pd.DataFrame,
     side = df['trade_side'].values
     spread = df['spread_ticks'].values
     n = len(ts)
+    date = df['date'].values if 'date' in df.columns else None
 
     results = []
     for wms in windows_ms:
@@ -40,6 +41,9 @@ def markout_analysis(df: pd.DataFrame,
         fwd_idx = np.searchsorted(ts, ts + wns)
         valid = fwd_idx < n
         fwd_idx_c = np.minimum(fwd_idx, n - 1)
+
+        if date is not None:
+            valid &= (date[fwd_idx_c] == date)
 
         raw_move = (mid[fwd_idx_c] - mid) / TICK
         raw_move[~valid] = np.nan
