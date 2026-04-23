@@ -224,24 +224,24 @@ class LOB:
         if entry is None:
             return
         pt, order_size, side = entry
-        remaining = order_size - fill_size
+        actual_fill = min(fill_size, order_size)
+        remaining = order_size - actual_fill
 
         if side == SIDE_BID:
             if pt not in self.bid_orders:
                 self.orders.pop(oid, None)
                 return
             level = self.bid_orders[pt]
-            actual_sz = min(fill_size, self.bid_sizes.get(pt, 0))
+            level_available = self.bid_sizes.get(pt, 0)
+            deduct = min(actual_fill, level_available)
             if remaining <= 0:
                 level.pop(oid, None)
                 self.orders.pop(oid, None)
-                self.bid_sizes[pt] -= actual_sz
-                self.total_bid_size -= actual_sz
             else:
                 level[oid] = remaining
                 self.orders[oid] = (pt, remaining, side)
-                self.bid_sizes[pt] -= actual_sz
-                self.total_bid_size -= actual_sz
+            self.bid_sizes[pt] -= deduct
+            self.total_bid_size -= deduct
             if self.bid_sizes.get(pt, 0) <= 0:
                 self.bid_sizes.pop(pt, None)
                 self.bid_orders.pop(pt, None)
@@ -252,17 +252,16 @@ class LOB:
                 self.orders.pop(oid, None)
                 return
             level = self.ask_orders[pt]
-            actual_sz = min(fill_size, self.ask_sizes.get(pt, 0))
+            level_available = self.ask_sizes.get(pt, 0)
+            deduct = min(actual_fill, level_available)
             if remaining <= 0:
                 level.pop(oid, None)
                 self.orders.pop(oid, None)
-                self.ask_sizes[pt] -= actual_sz
-                self.total_ask_size -= actual_sz
             else:
                 level[oid] = remaining
                 self.orders[oid] = (pt, remaining, side)
-                self.ask_sizes[pt] -= actual_sz
-                self.total_ask_size -= actual_sz
+            self.ask_sizes[pt] -= deduct
+            self.total_ask_size -= deduct
             if self.ask_sizes.get(pt, 0) <= 0:
                 self.ask_sizes.pop(pt, None)
                 self.ask_orders.pop(pt, None)

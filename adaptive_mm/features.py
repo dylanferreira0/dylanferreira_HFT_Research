@@ -407,14 +407,15 @@ def compute_features(
         feat[f'trade_rate{s}'] = n_trades / (wms / 1000.0)
 
         sum_sq = p_msq[idx_end] - p_msq[lb]
-        feat[f'realized_vol{s}'] = np.sqrt(sum_sq)
+        count = np.maximum(n_trades, 1.0)
+        feat[f'realized_vol{s}'] = np.sqrt(sum_sq / count)
 
-        bsz_lb = bid_size_l1.astype(np.float64)[np.clip(lb, 0, n - 1)]
-        bsz_now = bid_size_l1.astype(np.float64)
-        asz_lb = ask_size_l1.astype(np.float64)[np.clip(lb, 0, n - 1)]
-        asz_now = ask_size_l1.astype(np.float64)
-        feat[f'bid_depletion{s}'] = bsz_lb - bsz_now
-        feat[f'ask_depletion{s}'] = asz_lb - asz_now
+        bsz_f = bid_size_l1.astype(np.float64)
+        asz_f = ask_size_l1.astype(np.float64)
+        p_bsz_local = np.concatenate([[0.0], bsz_f])
+        p_asz_local = np.concatenate([[0.0], asz_f])
+        feat[f'bid_depletion{s}'] = p_bsz_local[lb] - p_bsz_local[idx_end]
+        feat[f'ask_depletion{s}'] = p_asz_local[lb] - p_asz_local[idx_end]
 
         if has_delta:
             delta_sum = p_delta[idx_end] - p_delta[lb]
