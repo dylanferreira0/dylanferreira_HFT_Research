@@ -662,7 +662,8 @@ def run_research(days: int | None = None, export: bool = True):
         print(f"  Features: {len(feat_df):,} rows x {feat_df.shape[1]} cols")
         all_features.append(feat_df)
 
-    full_df = pd.concat(all_features, ignore_index=True).copy()
+    full_df = pd.concat(all_features, ignore_index=True)
+    del all_features
 
     # ── Fix per-day cumulative counter resets ──
     # Each day starts its cum_* columns at 0. After concat, rolling-window
