@@ -662,6 +662,7 @@ def run_research(days: int | None = None, export: bool = True):
         print(f"  Features: {len(feat_df):,} rows x {feat_df.shape[1]} cols")
         all_features.append(feat_df)
 
+    n_days_loaded = len(all_features)
     full_df = pd.concat(all_features, ignore_index=True)
     del all_features
 
@@ -670,7 +671,7 @@ def run_research(days: int | None = None, export: bool = True):
     # deltas (p[i] - p[lb]) across day boundaries would go negative.
     # Fix: accumulate the end-of-day value as an offset to subsequent days.
     cum_cols = [c for c in full_df.columns if c.startswith('cum_')]
-    if 'date' in full_df.columns and len(all_features) > 1 and cum_cols:
+    if 'date' in full_df.columns and n_days_loaded > 1 and cum_cols:
         date_vals = full_df['date'].values
         boundaries = np.where(date_vals[:-1] != date_vals[1:])[0]
         if len(boundaries) > 0:
